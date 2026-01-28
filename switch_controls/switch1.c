@@ -6,11 +6,15 @@
 #include <time.h>
 #include <openssl/hmac.h>
 #include <openssl/crypto.h>
+#include "filter.h"
+#include "crypto/profiles.h"
+#include "crypto/auth.h"
+#include "crypto/extension.h"
 #include <openssl/rand.h>
 
-static const uint8_t KEY[] = "testingkey";
-static const int KEY_LEN = sizeof(KEY) - 1;
-#define TAG_LEN 32
+static const uint8_t KEY_TEST[] = "testingkey";
+
+static const profile_t *ACTIVE_PROFILE = NULL;
 
 #define TAG_LEN 32
 #define ETHERNET_HEADER_LEN 14
@@ -29,49 +33,65 @@ void print_packet(const u_char *packet, unsigned int len) {
 }
 
 
-void handle_authenticate(const struct pcap_pkthdr *header, const u_char *packet){ // take in packet
-    unsigned char full_tag[EVP_MAX_MD_SIZE];
-    unsigned int full_len = 0;
+void handle_authenticate(const struct pcap_pkthdr *header, const u_char *packet)
+{
+    packet_count++;
+    const profile_t *p = ACTIVE_PROFILE;
+    if (!p) return;
 
-    // authenticate original packet bytes
-    HMAC(EVP_sha256(), KEY, KEY_LEN, packet, header->len, full_tag, &full_len); // full_len will be 32
+    // nonce creating - needs tweaking
+    uint8_t nonce[32];
+    if (p->nonce_len > sizeof(nonce)) return;
+    if (RAND_bytes(nonce, p->nonce_len) != 1) return;
 
-    // append to packet
-    unsigned int new_len = header->len + TAG_LEN;
-    unsigned char *out = malloc(new_len);
+    uint8_t tag[64];
+    size_t tag_len = 0;
+    // compute the tag and store in tag
+    if (!auth_compute_tag(p, packet, header->len, nonce, p->nonce_len, tag, sizeof(tag), &tag_len)) return;
+
+    // evry 20 packets insert fake tag to ensure the handle verify works correctly
+    if (packet_count % 20 == 0) {
+        memset(tag, 0, tag_len); // fake tag
+        printf("Injected fake tag on packet %lu\n", packet_count);
+    }
+
+    // add extension to packet with new tag
+    size_t new_len = header->len + ext_len(p->nonce_len, (uint8_t)tag_len);
+    uint8_t *out = malloc(new_len);
     if (!out) return;
 
-    memcpy(out, packet, header->len);
-    memcpy(out + header->len, full_tag, TAG_LEN);
+    size_t written = ext_append(out, new_len, packet, header->len, p->profile_id, nonce, p->nonce_len, tag, (uint8_t)tag_len);
+    if (written == 0) { free(out); return; }
 
-    if (pcap_sendpacket(send_handle, out, new_len) != 0)
+    printf("packet tagged and send");
+    if (pcap_sendpacket(send_handle, out, (int)written) != 0)
         fprintf(stderr, "send failed: %s\n", pcap_geterr(send_handle));
 
     free(out);
 }
 
 int handle_verify(const struct pcap_pkthdr *header, const u_char *packet){
-    // take in packet
-    unsigned char full_tag[EVP_MAX_MD_SIZE];
-    unsigned int full_len = 0;
-    int original_packet_len = header->len - TAG_LEN;
-    const u_char *recv_tag = packet + original_packet_len;
+    const profile_t *p = ACTIVE_PROFILE;
 
-    // authenticate the original packet bytes
-    HMAC(EVP_sha256(), KEY, KEY_LEN, packet, original_packet_len, full_tag, &full_len); // full_len will be 32
+    // setup nonce and key, parse the extenson footer and calculate the tag and compare
+    const uint8_t *nonce = NULL;
+    const uint8_t *tag   = NULL;
+    size_t original_len  = 0;
 
-    // compare the tags
-    if (CRYPTO_memcmp(recv_tag, full_tag, TAG_LEN) != 0) {
-        printf("packet not verified");
-        return 0; // invalid
+    if (!ext_parse_footer_fixed(packet, header->len,
+                                p->profile_id, p->nonce_len, p->tag_len,
+                                &nonce, &tag, &original_len))
+        return 0;
+
+    if (!auth_verify_tag(p, packet, original_len, nonce, p->nonce_len, tag, p->tag_len)){
+        printf("*******     unable to verify packet    *******\n");
+        return 0;
     }
 
-    printf("packet verified successfully");
-
-    if (pcap_sendpacket(send_handle, packet, original_packet_len) != 0)
-        fprintf(stderr, "send failed: %s\n", pcap_geterr(send_handle));
-
+    printf("packet successfully verified using %s and sending onwards\n",alg_to_str(p->alg));
+    pcap_sendpacket(send_handle, packet, (int)original_len);
     return 1;
+
 }
 
 void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char *packet) {
@@ -105,7 +125,14 @@ int main(int argc, char *argv[]){
         return 1;
     }
 
-    //configure capture handle
+    // active profile setup, to be fixed
+    ACTIVE_PROFILE = profile_lookup(4);  // hardcoded for now
+    if (!ACTIVE_PROFILE) {
+        fprintf(stderr, "Active profile not found\n");
+        return 1;
+    }
+
+    //configure capture handle   - could shift this to another file? makes this important file congested and long ???????
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t *capture_handle = pcap_create(CAPTURE_IFACE, errbuf);
     if (capture_handle == NULL) {
@@ -137,7 +164,7 @@ int main(int argc, char *argv[]){
         return EXIT_FAILURE;
     }
 
-    //configure the send handle similar to capture handle
+    //configure the send handle similar to capture handle   - could also shift...
     send_handle = pcap_create(SEND_IFACE, errbuf);
     if (send_handle == NULL) {
         fprintf(stderr, "pcap_create for send_handle failed: %s\n", errbuf);
