@@ -1,8 +1,7 @@
 from scapy.all import sniff
 
-def process_packet(packet):
-    print("Packet reveived!")
-    print(packet)
+RECV_IFACE = "H2-eth0"
+def on_pkt(pkt):
+    print("Goose packet received")
 
-
-sniff(iface="H2-eth0", prn=process_packet)
+sniff(iface=RECV_IFACE, prn=on_pkt, store=False)

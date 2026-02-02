@@ -11,6 +11,7 @@
 #include "crypto/auth.h"
 #include "crypto/extension.h"
 #include <openssl/rand.h>
+#include <time.h>
 
 static const uint8_t KEY_TEST[] = "testingkey";
 
@@ -32,42 +33,56 @@ void print_packet(const u_char *packet, unsigned int len) {
     if (len % 16 != 0) printf("\n");
 }
 
+// ---- shift to a new file?
 
-void handle_authenticate(const struct pcap_pkthdr *header, const u_char *packet)
+static inline uint64_t now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static unsigned long timing_count = 0;
+static uint64_t timing_sum_ns = 0;
+
+int handle_authenticate(const struct pcap_pkthdr *header, const u_char *packet)
 {
     packet_count++;
     const profile_t *p = ACTIVE_PROFILE;
-    if (!p) return;
+    if (!p) return 0;
 
     // nonce creating - needs tweaking
     uint8_t nonce[32];
-    if (p->nonce_len > sizeof(nonce)) return;
-    if (RAND_bytes(nonce, p->nonce_len) != 1) return;
+    if (p->nonce_len > sizeof(nonce)) return 0;
+    if (RAND_bytes(nonce, p->nonce_len) != 1) return 0;
 
     uint8_t tag[64];
     size_t tag_len = 0;
     // compute the tag and store in tag
-    if (!auth_compute_tag(p, packet, header->len, nonce, p->nonce_len, tag, sizeof(tag), &tag_len)) return;
+    if (!auth_compute_tag(p, packet, header->len, nonce, p->nonce_len, tag, sizeof(tag), &tag_len)) return 0;
 
     // evry 20 packets insert fake tag to ensure the handle verify works correctly
     if (packet_count % 20 == 0) {
         memset(tag, 0, tag_len); // fake tag
-        printf("Injected fake tag on packet %lu\n", packet_count);
+        //printf("Injected fake tag on packet %lu\n", packet_count);
     }
 
     // add extension to packet with new tag
     size_t new_len = header->len + ext_len(p->nonce_len, (uint8_t)tag_len);
     uint8_t *out = malloc(new_len);
-    if (!out) return;
+    if (!out) return 0;
 
     size_t written = ext_append(out, new_len, packet, header->len, p->profile_id, nonce, p->nonce_len, tag, (uint8_t)tag_len);
-    if (written == 0) { free(out); return; }
+    if (written == 0) { free(out); return 0; }
 
     printf("packet tagged and send");
-    if (pcap_sendpacket(send_handle, out, (int)written) != 0)
+    if (pcap_sendpacket(send_handle, out, (int)written) != 0){
         fprintf(stderr, "send failed: %s\n", pcap_geterr(send_handle));
+        free(out);
+        return 0;
+    }
 
     free(out);
+    return 1;
 }
 
 int handle_verify(const struct pcap_pkthdr *header, const u_char *packet){
@@ -89,22 +104,46 @@ int handle_verify(const struct pcap_pkthdr *header, const u_char *packet){
     }
 
     printf("packet successfully verified using %s and sending onwards\n",alg_to_str(p->alg));
-    pcap_sendpacket(send_handle, packet, (int)original_len);
+    if (pcap_sendpacket(send_handle, packet, (int)original_len) != 0){
+        return 0;
+    }
     return 1;
 
 }
 
-void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char *packet) {
-    printf("packet has arrived of length:  %u\n", header->len);
-    //print_packet(packet, header->len);
-    // mode 1 -> authenticate
-    // mode 2 -> verify - might need tweaking, come back to this
-    if (packet_handler_mode == 1) {
-        handle_authenticate(header, packet);
-    } else if (packet_handler_mode == 2) {
-        handle_verify(header, packet);
+void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char *packet)
+{
+    if (!is_goose(packet, header->caplen)) {
+        printf("is not goose-------------------------------------------");
+        return;
     }
-}
+    printf("Pacjet is goose\n");
+
+    uint64_t t0 = now_ns();
+
+    int forwarded = 0;
+    if (packet_handler_mode == 1) {
+        forwarded = handle_authenticate(header, packet);
+    } else if (packet_handler_mode == 2) {
+        forwarded = handle_verify(header, packet);
+    } else if (packet_handler_mode == 3) {
+        forwarded = pcap_sendpacket(send_handle, packet, header->len);
+        printf("needs work");
+    }
+
+    uint64_t t1 = now_ns();
+    uint64_t proc_ns = t1 - t0;
+
+    if (forwarded) {
+        timing_sum_ns += proc_ns;
+        timing_count++;
+
+        double avg_us = (double)timing_sum_ns / (double)timing_count / 1e3;
+        printf("Avg switch processing time: %.3f us (n=%lu)\n", avg_us, timing_count);
+        }
+    }
+
+
 
 int main(int argc, char *argv[]){
 
@@ -120,13 +159,18 @@ int main(int argc, char *argv[]){
         CAPTURE_IFACE = "S2-eth1";
         SEND_IFACE    = "S2-eth2";
         packet_handler_mode = 2;
-    } else {
-        fprintf(stderr, "Invalid argument: %s (use 1 or 2)\n", argv[1]);
-        return 1;
+    } else if (strcmp(argv[1], "3") == 0) {
+        CAPTURE_IFACE = "S1-eth1";
+        SEND_IFACE    = "S1-eth2";
+        packet_handler_mode = 3;
+    } else if (strcmp(argv[1], "4") == 0) {
+        CAPTURE_IFACE = "S2-eth1";
+        SEND_IFACE    = "S2-eth2";
+        packet_handler_mode = 3;
     }
 
     // active profile setup, to be fixed
-    ACTIVE_PROFILE = profile_lookup(4);  // hardcoded for now
+    ACTIVE_PROFILE = profile_lookup(1);  // hardcoded for now
     if (!ACTIVE_PROFILE) {
         fprintf(stderr, "Active profile not found\n");
         return 1;

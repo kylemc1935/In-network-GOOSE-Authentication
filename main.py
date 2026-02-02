@@ -31,6 +31,7 @@ def set_topology_s2():
     net.addLink(H1, S1)
     net.addLink(S1, S2)
     net.addLink(S2, H2)
+    net.addLink(H2, H1)
 
     info( '*** Starting network\n')
     net.build()

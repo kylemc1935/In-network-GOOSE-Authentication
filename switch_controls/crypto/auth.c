@@ -29,7 +29,7 @@ static int hmac_sha256(const profile_t *p, const uint8_t *msg, size_t msg_len, c
 
     // initalise and use nonce to form message bytes and write the MAC
     if (EVP_MAC_init(ctx, p->key, p->key_len, params) != 1) goto done;
-    if (nonce && nonce_len) if (EVP_MAC_update(ctx, nonce, nonce_len) != 1) goto done;
+    if (nonce && nonce_len) if (EVP_MAC_update(ctx, nonce, nonce_len) != 1) goto done; // nonce not used here but kept in if needed
     if (EVP_MAC_update(ctx, msg, msg_len) != 1) goto done;
     if (EVP_MAC_final(ctx, out, &len, out_cap) != 1) goto done;
 
@@ -42,22 +42,38 @@ done:  // cleanup
     return ok;
 }
 
-static int blake2s_keyed(const profile_t *p, const uint8_t *msg, size_t msg_len, const uint8_t *nonce, size_t nonce_len, uint8_t *out, size_t out_cap, size_t *out_len) {
+static int blake2s_keyed(const profile_t *p, const uint8_t *msg, size_t msg_len, const uint8_t *nonce, size_t nonce_len, uint8_t *out, size_t out_cap, size_t *out_len){
     if (!p || !p->key || p->key_len == 0) return 0;
     if (out_cap < 32) return 0;
 
     int ok = 0;
     size_t len = 0;
 
-    EVP_MAC *mac = EVP_MAC_fetch(NULL, "BLAKE2", NULL);
-
+    // fetch BLAKE2SMAC not BLAKE2S
+    EVP_MAC *mac = EVP_MAC_fetch(NULL, "BLAKE2SMAC", NULL);
     if (!mac) {
-        fprintf(stderr, "BLAKE2 EVP_MAC_fetch failed)\n");
+        fprintf(stderr, "EVP_MAC_fetch(BLAKE2SMAC) failed\n");
         return 0;
     }
 
-    return ok; // needs fixed does not work
+    EVP_MAC_CTX *ctx = EVP_MAC_CTX_new(mac); //create context
+    if (!ctx) { EVP_MAC_free(mac); return 0; }
+
+    // intalise and use nonce to form message and output the mac
+    if (EVP_MAC_init(ctx, p->key, p->key_len, NULL) != 1) goto done;
+    if (nonce && nonce_len) if (EVP_MAC_update(ctx, nonce, nonce_len) != 1) goto done; // nonce not used here but kept in if needed
+    if (EVP_MAC_update(ctx, msg, msg_len) != 1) goto done;
+    if (EVP_MAC_final(ctx, out, &len, out_cap) != 1) goto done;
+
+    *out_len = len;
+    ok = 1;
+
+done:
+    EVP_MAC_CTX_free(ctx);
+    EVP_MAC_free(mac);
+    return ok;
 }
+
 
 
 // helper functon for cho0sing gcm key size
