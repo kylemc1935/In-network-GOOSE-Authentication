@@ -2,6 +2,7 @@
 #define FILTER_H
 
 #include <stdint.h>
+#include <stdio.h>
 
 int is_goose(const unsigned char *pkt, unsigned int len);
 

@@ -1,4 +1,4 @@
-#include "extension.h"
+#include "crypto/extension.h"
 #include <string.h>
 
 size_t ext_len(uint8_t nonce_len, uint8_t tag_len)

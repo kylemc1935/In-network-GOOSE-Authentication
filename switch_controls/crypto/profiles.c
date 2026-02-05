@@ -1,4 +1,4 @@
-#include "profiles.h"
+#include "crypto/profiles.h"
 
 /* One master key (make it at least 32 bytes to satisfy ChaCha20-Poly1305) */
 static const uint8_t KEY[32] = {

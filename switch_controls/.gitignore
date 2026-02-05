@@ -1,0 +1,22 @@
+# ---- build artifacts ----
+*.o
+*.a
+*.so
+
+# final binaries
+build/
+switch1
+
+# ---- editor / OS junk ----
+.DS_Store
+.vscode/
+.idea/
+
+# ---- logs / pcaps / runtime data ----
+*.log
+*.pcap
+*.pcapng
+
+# ---- temporary files ----
+*~
+*.swp
