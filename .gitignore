@@ -4,7 +4,7 @@
 *.so
 
 # final binaries
-build/
+switch_controls/build/
 switch1
 
 # ---- editor / OS junk ----
@@ -14,7 +14,6 @@ switch1
 
 # ---- logs / pcaps / runtime data ----
 *.log
-*.pcap
 *.pcapng
 
 # ---- temporary files ----
