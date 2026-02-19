@@ -1,0 +1,25 @@
+##-- notes to use iperf --##
+
+iperf3 -s = run as a server (so listen for the sender)
+iperf3 -c = run as a client
+iperf -u -c = -u means send udp (used for sending controlled load)
+-b - set target rate, i.e -b 200M
+-t - duration, i.e -t 30 (30 seconds)
+-l 1000, sets upd payload size
+
+-B - forces traffic to use a specific interface
+i.e iperf3 -c D.D.D.D -B S.S.S.S
+- D = destination, S = source IP
+this is to be used when sending in the loop, dosent work in mininet but hopeful it
+will work in experiment
+
+likewise when running as a server,
+iperf3 -s -B 1.1.1.2
+will listen only on this port
+
+so run (using mininet addresses)
+iperf3 -s -B 1.1.1.2 onnserver
+and on client tun iperf3 -c 1.1.1.2 -B 1.1.1.1 -u -b 10M
+
+
+find the link capacity by calling 'ethtool enp1s0'

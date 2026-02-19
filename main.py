@@ -31,7 +31,7 @@ def set_topology_s2():
     net.addLink(H1, S1)
     net.addLink(S1, S2)
     net.addLink(S2, H2)
-    net.addLink(H2, H1)
+    # net.addLink(S2, H1)
 
     info( '*** Starting network\n')
     net.build()
@@ -42,10 +42,24 @@ def set_topology_s2():
     info( '\n')
 
     info('**Setting flows to prevent duplication of packets ****\n')
+
+    # S1.cmd('ovs-ofctl del-flows S1')
+    # S1.cmd('ovs-ofctl add-flow S1 "in_port=1,actions=drop"')
+    # S2.cmd('ovs-ofctl del-flows S2')
+    # S2.cmd("ovs-ofctl add-flows S2 'in_port=S2-eth2, actions=drop'")
+
     S1.cmd('ovs-ofctl del-flows S1')
-    S1.cmd("ovs-ofctl add-flows S1 'in_port=S1-eth1, actions=drop'")
+    S1.cmd('ovs-ofctl add-flow S1 "priority=200,in_port=1,dl_type=0x88b8,actions=drop"')
+    S1.cmd('ovs-ofctl add-flow S1 "priority=0,actions=normal"')
+
     S2.cmd('ovs-ofctl del-flows S2')
-    S2.cmd("ovs-ofctl add-flows S2 'in_port=S2-eth2, actions=drop'")
+    S2.cmd('ovs-ofctl add-flow S2 "priority=200,in_port=1,dl_type=0x88b8,actions=drop"')
+    S2.cmd('ovs-ofctl add-flow S2 "priority=0,actions=normal"')
+
+    # drop inbound GOOSE frames arriving on the return link for when using only one host to prevent, reinserting of packetes to the network
+    H1.cmd('ebtables -F')
+    H1.cmd('ebtables -A INPUT -i H1-eth1 -p 0x88b8 -j DROP')
+    H1.cmd('ebtables -A INPUT -i H1-eth1 -j DROP')
 
     info( '*** Preparing custom sgsim scripts \n')
     CLI.do_run_experiment = experiment
@@ -57,21 +71,10 @@ def experiment(self, line):
     net = self.mn
     info('Starting experiment... \n')
 
+    # come back to fix
 
 
-    net.get('H2').cmdPrint(
-                'xterm -geometry 70x20-35-35 -fa "Monospace" -fs 8 -T "H - Receiver" -e "python3 receive_goose.py ; exec bash"&')
-
-    info("=== Running experiment")
-
-
-    net.get('H1').cmdPrint('xterm -geometry 70x20+35-35 -fa "Monospace" -fs 8 -T "H1 - Sending" -e "python3 send_goose.py; exec bash"&')
-
-
-
-
-    info("===ALL EXPERIMENTS FINISHED===\n")
-
+    info("=== ALL EXPERIMENTS STARTED ===\n")
 
 
 if __name__ == '__main__':
