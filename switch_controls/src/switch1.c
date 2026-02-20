@@ -296,7 +296,11 @@ int main(int argc, char *argv[])
         capture_iface = "S2-eth1";
         send_iface    = "S2-eth2";
     } else if (strcmp(argv[1], "3") == 0) {
-        ctx.sw_id = SW_EXPER;
+        ctx.sw_id = SW_S1;
+        capture_iface = "enp1s0";
+        send_iface    = "enp2s0";
+    } else if (strcmp(argv[1], "4") == 0) {
+        ctx.sw_id = SW_S2;
         capture_iface = "enp1s0";
         send_iface    = "enp2s0";
     } else {
