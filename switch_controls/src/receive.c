@@ -4,45 +4,39 @@
 #include <stdlib.h>
 #include <string.h>
 #include <arpa/inet.h>
+#include <time.h>
+#include <unistd.h>
+#include <signal.h>
 #include "pcap_open.h"
 
-#define LISTEN_IFACE "H2-eth0"
-#define SEND_IFACE   "H2-eth1"
-
+//#define LISTEN_IFACE "H2-eth0"
+#define LISTEN_IFACE "H1-eth1"
 #define ETH_HDR_LEN 14
-
 #define MARKER0 0xAA
 #define MARKER1 0xFF
 #define TRAILER_LEN 6
+#define MAX_RECV 20000
 
-static pcap_t *sendh = NULL;
+//static pcap_t *sendh = NULL;
 
+struct recv_rec {
+    uint32_t seq;
+    uint64_t ts_ns;
+};
 
-static void send_ack(uint32_t seq, const uint8_t *rx_pkt) // send ack frame to the H1
+static struct recv_rec recv_log[MAX_RECV];
+static size_t recv_count = 0;
+
+static inline uint64_t now_ns(void)
 {
-    uint8_t out[ETH_HDR_LEN + TRAILER_LEN]; // output buffer for ack packet
-
-    // dst mac
-    memcpy(out + 0, rx_pkt + 6, 6);
-    // src mac
-    memcpy(out + 6, rx_pkt + 0, 6);
-
-    out[12] = 0x88;
-    out[13] = 0xB5;
-
-    // marker for trailer
-    out[ETH_HDR_LEN + 0] = MARKER0;
-    out[ETH_HDR_LEN + 1] = MARKER1;
-
-    uint32_t net = htonl(seq); // convert to network bytes and copy into eth frame
-    memcpy(out + ETH_HDR_LEN + 2, &net, sizeof(net));
-
-    if (pcap_sendpacket(sendh, out, sizeof(out)) != 0) {
-        fprintf(stderr, "ACK send failed: %s\n", pcap_geterr(sendh));
-    }
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-static void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *pkt){
+static void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *pkt)
+{
+    uint64_t t_recv = now_ns();
 
     if (h->caplen < ETH_HDR_LEN + TRAILER_LEN)
         return;
@@ -51,46 +45,41 @@ static void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_ch
 
     //printf("checking marker");
     if (t[0] != MARKER0 || t[1] != MARKER1){
-        printf("no marker");
+        printf("no marker\n");
         return;
     }
-    printf("marker present");
+//    printf("marker present\n");
 
     uint32_t seq; // extract seq no
     memcpy(&seq, t + 2, sizeof(seq));
     seq = ntohl(seq);
 
+    if (recv_count < MAX_RECV) {
+        recv_log[recv_count].seq = seq;
+        recv_log[recv_count].ts_ns = t_recv;
+        recv_count++;
+    }
+
     printf("packet seq=%u\n", seq);
 
-    send_ack(seq, pkt);
 }
 
 int main(void)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
 
-    pcap_t *cap = open_pcap_handle(LISTEN_IFACE, 1, errbuf);
-    if (!cap) {
-        fprintf(stderr, "Failed to open capture handle on %s: %s\n",
-                LISTEN_IFACE, errbuf);
-        return 1;
-    }
-
-    sendh = open_pcap_handle(SEND_IFACE, 0, errbuf);
-    if (!sendh) {
-        fprintf(stderr, "Failed to open send handle on %s: %s\n",
-                SEND_IFACE, errbuf);
-        pcap_close(cap);
+    pcap_t *recvh = open_pcap_handle(LISTEN_IFACE, 1, errbuf);
+    if (!recvh) {
+        fprintf(stderr, "Failed to open capture handle on %s: %s\n", LISTEN_IFACE, errbuf);
         return 1;
     }
 
     printf("Listening on %s…\n", LISTEN_IFACE);
 
-    if (pcap_loop(cap, -1, packet_handler, NULL) < 0) {
-        fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(cap));
+    if (pcap_loop(recvh, -1, packet_handler, NULL) < 0) {
+        fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(recvh));
     }
 
-    pcap_close(cap);
-    pcap_close(sendh);
+    pcap_close(recvh);
     return 0;
 }

@@ -50,5 +50,7 @@ const char *alg_to_str(crypto_alg_t alg) {
         case ALG_BLAKE2S:       return "BLAKE2s-256";
         case ALG_AES_GCM:      return "AES-GMAC";
         case ALG_CHACHA20_POLY1305:   return "ChaCha20-Poly1305";
+        default:                      return "ALG?";
     }
 }
+
