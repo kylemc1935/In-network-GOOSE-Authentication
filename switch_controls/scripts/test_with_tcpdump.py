@@ -14,6 +14,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import List, Tuple, Optional
+import json
 
 from scapy.all import PcapReader
 
@@ -32,36 +33,41 @@ class PcapStats:
 GOOSE_ETHERTYPE = 0x88B8
 output_csv = Path("latency.csv")
 DEFAULT_BUFSIZE_KB = 16384
-pcap_dir = Path("./pcaps")
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+pcap_dir = BASE_DIR / "data" / "pcaps"
+output_dir = BASE_DIR / "data" / "t_spent_switch_results"
+
+import re
+
 
 # marker used on authenticated packets
 DEFAULT_MARKER_HEX = "AAFF"
 
 # profiles to stop trying long commands
 PROFILES = {
-    "auth": {
-        "mode": "auth",
-        "in_iface": "H1-eth0",
-        "out_iface": "H1-eth1",
-        "default_duration": 10.0,
-        "default_max": 1000,
-    },
-    "verify": {
-        "mode": "verify",
-        "in_iface": "S2-eth1",
-        "out_iface": "S2-eth2",
-        "default_duration": 10.0,
-        "default_max": 1000,
-    },
-    "listen" : {
-        "mode": "verify",
-        "in_iface": "H1-eth0",
-        "out_iface": "H2-eth0",
-        "default_duration": 10.0,
-        "default_max": 1000,
-    }
+  "auth": {
+    "kind": "switch",
+    "start_iface": "S1-eth1",
+    "end_iface":   "S1-eth2",
+    "start_rule": "tail",
+    "end_rule":   "marker",
+  },
+  "verify": {
+    "kind": "switch",
+    "start_iface": "S2-eth1",
+    "end_iface":   "S2-eth2",
+    "start_rule": "marker",
+    "end_rule":   "tail",
+  },
+  "mininet": { # H1->S1->S2->H1
+    "kind": "path",
+    "start_iface": "H1-eth0",   # sender
+    "end_iface":   "H1-eth1",   # receiver
+    "start_rule": "tail",
+    "end_rule":   "tail",
+  }
 }
-
 
 def is_goose(frame_bytes: bytes) -> bool:
     eth_type = int.from_bytes(frame_bytes[12:14], "big")
@@ -69,13 +75,13 @@ def is_goose(frame_bytes: bytes) -> bool:
         return True
     return False
 
-def extract_seq(raw: bytes, *, mode: int, marker: bytes) -> int:
-    if mode == 0: # appended to the end
+def extract_seq(raw: bytes, *, mode: str, marker: bytes) -> int:
+    if mode == 'tail': # appended to the end
         if len(raw) < 4:
             return -1
         return int.from_bytes(raw[-4:], "big", signed=False)
 
-    if mode == 1: # not appended to the end and need to find
+    if mode == 'marker': # not appended to the end and need to find
         idx = raw.rfind(marker)
         if idx == -1:
             return -1
@@ -200,9 +206,18 @@ def capture_two_pcaps(in_iface: str, out_iface: str, in_pcap: Path, out_pcap: Pa
 
     try:
         start = time.time()
+        stop_prompt = False
         while time.time() - start < duration_s:
             if p_in.poll() is not None or p_out.poll() is not None:
                 break
+            remaining = duration_s - (time.time() - start)
+
+            if not stop_prompt and remaining <= 5:
+                print("###################\n")
+                print("Less than 5 seconds left...\n")
+                print("###################\n")
+                stop_prompt = True
+
             time.sleep(0.05)
     finally:
         print("stopping both tcpdumps\n")
@@ -215,7 +230,6 @@ def capture_two_pcaps(in_iface: str, out_iface: str, in_pcap: Path, out_pcap: Pa
             raise FileNotFoundError(f"tcpdump did not create pcap: {pcap}")
         if pcap.stat().st_size == 0:
             raise RuntimeError(f"pcap exists but is empty (no packets captured?): {pcap}")
-
 
 # write to csv, need to come back and sort ##################
 def write_csv(csv_path: Path, rows: List[Tuple[int, float, float, float]]) -> None:
@@ -232,7 +246,13 @@ def print_stats(rows: List[Tuple[int, float, float, float]]) -> None:
         print("No matches")
         return
 
-    deltas = [r[3] for r in rows]
+    WARMUP = 1000
+    if len(rows) <= WARMUP:
+        print("Not enough packets after warmup exclusion.")
+        return
+
+    rows_steady = rows[WARMUP:]
+    deltas = [r[3] for r in rows_steady]
     deltas_sorted = sorted(deltas)
 
     n = len(deltas_sorted)
@@ -244,7 +264,7 @@ def print_stats(rows: List[Tuple[int, float, float, float]]) -> None:
     print(f"Matched {n} packets.")
     print(f"avg={avg:.3f} ms, p50={p50:.3f} ms, p95={p95:.3f} ms, p99~={p99:.3f} ms")
 
-def print_system_throughput(rows: List[Tuple[int, float, float, float]]) -> None:
+def print_system_throughput(rows, startStats : PcapStats, endStats : PcapStats) -> None:
     if not rows:
         print("No matched packets")
         return
@@ -253,15 +273,82 @@ def print_system_throughput(rows: List[Tuple[int, float, float, float]]) -> None
     last_tout = rows[-1][2]
 
     duration = max(1e-9, last_tout - first_tin)
-
+    sent = startStats.unique_seqs
     delivered = len(rows)
+    lost = max(0, sent - delivered)
+    delivery_ratio = (delivered / sent) if sent > 0 else 0.0
     pps = delivered / duration
 
     print("Throuput stats:\n")
     print(f"duration: {duration:.6f} s")
     print(f"delivered packets: {delivered}")
+    print(f"lost (start - matched): {lost}")
+    print(f"delivery ratio:{delivery_ratio * 100:.2f}%")
     print(f"throughput: {pps:.1f} pkt/s")
 
+def write_metadata(meta_path: Path, *, profile: str, kind: str, alg: str | None, ## most definetly overkill but making sure i have what i need
+                   start_stats: PcapStats, end_stats: PcapStats, rows: List[Tuple[int, float, float, float]]) -> None:
+
+    delivered = len(rows)
+    sent = start_stats.unique_seqs
+    lost = max(0, sent - delivered)
+    delivery_ratio = (delivered / sent) if sent > 0 else 0.0
+
+    if rows:
+        first_tin = rows[0][1]
+        last_tout = rows[-1][2]
+        duration_actual = max(1e-9, last_tout - first_tin)
+        pps = delivered / duration_actual
+    else:
+        duration_actual = 0.0
+        pps = 0.0
+
+    meta = {
+        "profile": profile,
+        "kind": kind,
+        "algorithm": alg,
+
+        "start_capture": {
+            "total_pkts": start_stats.total_pkts,
+            "total_bytes": start_stats.total_bytes,
+            "unique_seqs": start_stats.unique_seqs,
+            "min_seq": start_stats.min_seq,
+            "max_seq": start_stats.max_seq,
+            "first_ts": start_stats.first_ts,
+            "last_ts": start_stats.last_ts,
+        },
+
+        "end_capture": {
+            "total_pkts": end_stats.total_pkts,
+            "total_bytes": end_stats.total_bytes,
+            "unique_seqs": end_stats.unique_seqs,
+            "min_seq": end_stats.min_seq,
+            "max_seq": end_stats.max_seq,
+            "first_ts": end_stats.first_ts,
+            "last_ts": end_stats.last_ts,
+        },
+
+        "t_spent_switch_results": {
+            "delivered_packets": delivered,
+            "sent_packets": sent,
+            "lost_packets": lost,
+            "delivery_ratio": delivery_ratio,
+            "duration_s": duration_actual,
+            "throughput_pps": pps
+        }
+    }
+
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=4)
+
+    print(f"Metadata written to {meta_path}")
+
+def slugify(s: str) -> str:
+    s = s.strip().lower()
+    s = re.sub(r"\s+", "_", s)
+    s = re.sub(r"[^a-z0-9_\-\.]+", "", s)
+    return s or "unnamed"
 
 def main():
     ap = argparse.ArgumentParser(description="Capture (optional) + offline correlate by seq (sort + merge-join).")
@@ -269,52 +356,94 @@ def main():
     ap.add_argument("--duration", type=float, help="Capture duration in seconds")
     ap.add_argument("--max", type=int, default=1000, help="Max matched pairs to write")
 
+    # dynamically creating cvs
+    ap.add_argument("--named", action="store_true",
+                    help="Prompt for algorithm name and include it in CSV filename.")
+    ap.add_argument("--alg", type=str, default=None,
+                    help="Algorithm name to include in CSV filename (skips prompt).")
+
     args = ap.parse_args()
 
     p = PROFILES[args.profile]
-    mode = p["mode"]
-    in_iface = p["in_iface"]
-    out_iface = p["out_iface"]
+    kind = p["kind"]
+    kind_tag = "switch" if kind == "switch" else "e2e"
+
+    in_iface = p["start_iface"]
+    out_iface = p["end_iface"]
 
     duration = args.duration or p["default_duration"]
     max_matches = args.max or p["default_max"]
 
+    start_mode = p["start_rule"]
+    end_mode = p["end_rule"]
+
     marker = bytes.fromhex(DEFAULT_MARKER_HEX)
 
-    # decide extraction modes based on switch mode
-    if mode == "auth":
-        in_mode = 0
-        out_mode = 1
-    else:  # verify
-        in_mode = 1
-        out_mode = 0
 
     ts = time.strftime("%Y%m%d_%H%M%S") # create unique pcap files
     pcap_dir.mkdir(parents=True, exist_ok=True)
-    in_pcap = pcap_dir / f"in_{in_iface}_{ts}.pcap"
-    out_pcap = pcap_dir / f"out_{out_iface}_{ts}.pcap"
+    start_pcap = pcap_dir / f"in_{in_iface}_{ts}.pcap"
+    end_pcap = pcap_dir / f"out_{out_iface}_{ts}.pcap"
+
+    named = args.named
+
+    if not named:
+        print("\n\n")
+        print("*********** WARNING: No naming format provided **********")
+        print("\n\n")
+
+    alg = args.alg
+    if args.named and not alg:
+        alg = input("Algorithm name for CSV (e.g., hmac_sha256, gmac, blake2s): ").strip()
+
 
     # tcpdump filter for GOOSE only
     filter = "ether proto 0x88b8"
 
     # run experiment
-    capture_two_pcaps(in_iface, out_iface, in_pcap, out_pcap,
+    capture_two_pcaps(in_iface, out_iface, start_pcap, end_pcap,
             duration_s=duration, filter=filter,)
 
-    print(f"Captured:\n  IN : {in_pcap}\n  OUT: {out_pcap}")
+    print(f"Captured:\n  IN : {start_pcap}\n  OUT: {end_pcap}")
 
     # parse in files and match timestamps
     print("reading in files and matching\n")
-    ins, in_stats = read_pairs(in_pcap, mode=in_mode, marker=marker)
-    outs, out_stats = read_pairs(out_pcap, mode=out_mode, marker=marker)
+    starts, start_stats = read_pairs(start_pcap, mode=start_mode, marker=marker)
+    ends, end_stats = read_pairs(end_pcap, mode=end_mode, marker=marker)
 
+    rows = merge_join(starts, ends, max_matches=max_matches)
 
-    rows = merge_join(ins, outs, max_matches=max_matches)
-
-    print_system_throughput(rows)
-    print("writing results to csv\n")
-    write_csv(output_csv, rows)
+    if kind == "switch":
+        print("\n=== SWITCH PROCESSING LATENCY ===")
+    else:
+        print("\n=== END-TO-END PATH LATENCY ===")
+        print_system_throughput(rows, start_stats, end_stats)
     print_stats(rows)
+
+    if alg:
+        print("writing t_spent_switch_results to csv and metadata\n")
+
+        alg_tag = slugify(alg) if alg else "untagged"
+
+        csv_name = f"{kind_tag}_{args.profile}_{alg_tag}_{ts}.csv"
+        csv_path = output_dir / csv_name
+        write_csv(csv_path, rows)
+
+        meta_path = csv_path.with_suffix(".meta.json")
+
+        write_metadata(
+            meta_path,
+            profile=args.profile,
+            kind=kind_tag,
+            alg=alg,
+            start_stats=start_stats,
+            end_stats=end_stats,
+            rows=rows
+        )
+    else:
+        print("no csv name input to print to csv")
+
+
 
 
 if __name__ == "__main__":
