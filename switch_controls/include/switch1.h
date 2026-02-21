@@ -28,6 +28,9 @@ typedef struct ctx {
 
     unsigned long timing_count;
     uint64_t timing_sum_ns;
+
+    uint64_t crypto_last_ns;   // per packet crypto time
+    uint64_t total_last_ns;
 } ctx_t;
 
 // want to look at moving these but works for now

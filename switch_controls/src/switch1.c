@@ -31,6 +31,8 @@ static inline uint64_t now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
+static inline uint64_t dt_ns(uint64_t t0, uint64_t t1) { return t1 - t0; }
+
 int handle_authenticate(ctx_t *ctx, const struct pcap_pkthdr *header, const u_char *packet)
 {
     const profile_t *p = ctx->profile;
@@ -41,6 +43,7 @@ int handle_authenticate(ctx_t *ctx, const struct pcap_pkthdr *header, const u_ch
     const uint8_t *nonce_ptr = NULL;
     uint8_t nonce_len = p->nonce_len;
 
+    uint64_t t_crypto0 = now_ns();
     if (nonce_len > 0) {
         if (nonce_len > sizeof(nonce)) return 0;
         if (RAND_bytes(nonce, nonce_len) != 1) return 0;
@@ -52,7 +55,10 @@ int handle_authenticate(ctx_t *ctx, const struct pcap_pkthdr *header, const u_ch
     uint8_t tag[64];
     size_t tag_len = 0;
     // compute the tag and store in tag
+
     if (!auth_compute_tag(p, packet, header->len, nonce_ptr, nonce_len, tag, sizeof(tag), &tag_len)) return 0;
+    uint64_t t_crypto1 = now_ns();
+    ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
 
 //    // evry 20 packets insert fake tag to ensure the handle verify works correctly
 //    if (packet_count % 20 == 0) {
@@ -91,10 +97,13 @@ int handle_verify(ctx_t *ctx, const struct pcap_pkthdr *header, const u_char *pa
     &nonce, &tag, &original_len))
         return 0;
 
+    uint64_t t_crypto0 = now_ns();
     if (!auth_verify_tag(p, packet, original_len, nonce, p->nonce_len, tag, p->tag_len)){
         printf("*******     unable to verify packet    *******\n");
         return 0;
     }
+    uint64_t t_crypto1 = now_ns();
+    ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
 
 //    printf("packet successfully verified using %s and sending onwards\n",alg_to_str(p->alg));
     if (pcap_sendpacket(ctx->send_handle, packet, (int)original_len) != 0){
@@ -106,7 +115,6 @@ int handle_verify(ctx_t *ctx, const struct pcap_pkthdr *header, const u_char *pa
 
 int handle_aead_encrypt(ctx_t *ctx, const struct pcap_pkthdr *header, const u_char *packet)
 {
-    packet_count++;
     const profile_t *p = ctx->profile;
     if (!p || !header || !packet) return 0;
 
@@ -130,6 +138,7 @@ int handle_aead_encrypt(ctx_t *ctx, const struct pcap_pkthdr *header, const u_ch
     memcpy(out_buf, packet, header->len);
 
     // generate nonce
+    uint64_t t_crypto0 = now_ns();
     uint8_t nonce[32];
     if (p->nonce_len > sizeof(nonce)) return 0;
     if (RAND_bytes(nonce, (int)p->nonce_len) != 1) return 0;
@@ -137,11 +146,13 @@ int handle_aead_encrypt(ctx_t *ctx, const struct pcap_pkthdr *header, const u_ch
     // encrypt payload region, authenticate AAD header region
     uint8_t tag[16];
     size_t tag_len = 0;
+
     if (!aead_encrypt_inplace(p, aad, aad_len, out_buf + pt_off, pt_len, nonce, p->nonce_len,
             tag, sizeof(tag), &tag_len)){
-        printf("AEAD encrypt failed\n");
         return 0;
     }
+    uint64_t t_crypto1 = now_ns();
+    ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
 
 //    // corrupt occassional tag to test decrypt response
 //    if (packet_count % 20 == 0) {
@@ -196,11 +207,14 @@ int handle_aead_decrypt_verify(ctx_t *ctx, const struct pcap_pkthdr *header, con
     size_t ct_off = ETHERNET_HEADER_LEN; // offset, anything after header is ciphertext
     size_t ct_len = protected_len - ct_off;
 
+    uint64_t t_crypto0 = now_ns();
     // decrypt and verify tag
     if (!aead_decrypt_verify_inplace(p, aad, aad_len, buf + ct_off, ct_len, nonce, p->nonce_len, tag, p->tag_len)){
         printf("******* AEAD verify/decrypt failed (%s) *******\n", alg_to_str(p->alg));
         return 0;
     }
+    uint64_t t_crypto1 = now_ns();
+    ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
 
     //printf("packet AEAD verified+decrypted using %s and sending onwards\n", alg_to_str(p->alg));
 
@@ -219,16 +233,17 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char
     if (!is_goose(packet, header->caplen)) return;
     packet_count ++;
 
-    uint64_t t0 = now_ns();
 //    const profile_t *p = ctx->profile;
-
+    uint64_t t_total0 = now_ns();
     int forwarded = ctx->action ? ctx->action(ctx, header, packet) : 0;
-    uint64_t t1 = now_ns();
-    uint64_t t_taken = (t1 - t0);
-    ctx->timing_sum_ns += t_taken;
+    uint64_t t_total1 = now_ns();
+    ctx->total_last_ns = dt_ns(t_total0, t_total1);
+    ctx->timing_sum_ns += ctx->total_last_ns;
+    printf("Packet: %lu switch processing time: %.3f us\n", packet_count, (double)ctx->total_last_ns / 1e3);
 
     if (forwarded) {
-        fprintf(ctx->csv, "%s, %s, %s, %lu\n", sw_to_str(ctx->sw_id), alg_to_str(ctx->profile->alg), mode_to_str(ctx->profile->mode), t_taken);
+        fprintf(ctx->csv, "%s, %s, %s, %lu, %lu\n", sw_to_str(ctx->sw_id), alg_to_str(ctx->profile->alg), mode_to_str(ctx->profile->mode),
+            ctx->crypto_last_ns, ctx->total_last_ns);
         ctx->timing_count++;
         if (ctx->timing_count == 50) {
             double avg_us = (double)ctx->timing_sum_ns / 50.0 / 1e3;
@@ -329,7 +344,7 @@ int main(int argc, char *argv[])
     }
     fseek(ctx.csv, 0, SEEK_END);
     if (ftell(ctx.csv) == 0) {
-        fprintf(ctx.csv, "sw,alg,mode,delta_ns\n");
+        fprintf(ctx.csv, "sw,alg,mode,crypto_ns,total_ns\n");
         fflush(ctx.csv);
     }
 
