@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import List, Tuple, Optional
 import json
+import statistics
 
 from scapy.all import PcapReader
 
@@ -241,12 +242,12 @@ def write_csv(csv_path: Path, rows: List[Tuple[int, float, float, float]]) -> No
             w.writerow([seq, f"{tin:.6f}", f"{tout:.6f}", f"{dms:.6f}"])
 
 # this is for time stats, not througput
-def print_stats(rows: List[Tuple[int, float, float, float]]) -> None:
+def print_stats(rows: List[Tuple[int, float, float, float]]) -> dict:
     if not rows:
         print("No matches")
         return
 
-    WARMUP = 1000
+    WARMUP = 10
     if len(rows) <= WARMUP:
         print("Not enough packets after warmup exclusion.")
         return
@@ -257,12 +258,29 @@ def print_stats(rows: List[Tuple[int, float, float, float]]) -> None:
 
     n = len(deltas_sorted)
     avg = sum(deltas_sorted) / n
+    std = statistics.pstdev(deltas_sorted)
     p50 = deltas_sorted[n // 2]
     p95 = deltas_sorted[max(0, int(n * 0.95) - 1)]
     p99 = deltas_sorted[max(0, int(n * 0.99) - 1)] # unsure what to keep
 
+    stats = {
+        "ok": True,
+        "unit": "ms",
+        "warmup": WARMUP,
+        "matched_total": len(rows),
+        "matched_used": n,
+        "avg_ms": avg,
+        "std_ms": std,
+        "p50_ms": p50,
+        "p95_ms": p95,
+        "p99_ms": p99,
+        "min_ms": deltas_sorted[0],
+        "max_ms": deltas_sorted[-1],
+    }
+
     print(f"Matched {n} packets.")
-    print(f"avg={avg:.3f} ms, p50={p50:.3f} ms, p95={p95:.3f} ms, p99~={p99:.3f} ms")
+    print(f"avg={avg:.3f} ms, std={std:.3f} ms, p50={p50:.3f} ms, p95={p95:.3f} ms, p99={p99:.3f} ms")
+    return stats
 
 def print_system_throughput(rows, startStats : PcapStats, endStats : PcapStats) -> None:
     if not rows:
@@ -286,8 +304,10 @@ def print_system_throughput(rows, startStats : PcapStats, endStats : PcapStats) 
     print(f"delivery ratio:{delivery_ratio * 100:.2f}%")
     print(f"throughput: {pps:.1f} pkt/s")
 
-def write_metadata(meta_path: Path, *, profile: str, kind: str, alg: str | None, ## most definetly overkill but making sure i have what i need
-                   start_stats: PcapStats, end_stats: PcapStats, rows: List[Tuple[int, float, float, float]]) -> None:
+def write_metadata(meta_path: Path, *, profile: str, kind: str, alg: str | None,
+                   start_stats: PcapStats, end_stats: PcapStats,
+                   rows: List[Tuple[int, float, float, float]],
+                   latency_stats: dict) -> None:
 
     delivered = len(rows)
     sent = start_stats.unique_seqs
@@ -335,7 +355,9 @@ def write_metadata(meta_path: Path, *, profile: str, kind: str, alg: str | None,
             "delivery_ratio": delivery_ratio,
             "duration_s": duration_actual,
             "throughput_pps": pps
-        }
+        },
+        "latency_ms": latency_stats
+
     }
 
     meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -353,7 +375,7 @@ def slugify(s: str) -> str:
 def main():
     ap = argparse.ArgumentParser(description="Capture (optional) + offline correlate by seq (sort + merge-join).")
     ap.add_argument("--profile", required=True, choices=PROFILES.keys(), help="Use a predefined profile (auth/verify).")
-    ap.add_argument("--duration", type=float, help="Capture duration in seconds")
+    ap.add_argument("--duration", default=10, type=float, help="Capture duration in seconds")
     ap.add_argument("--max", type=int, default=1000, help="Max matched pairs to write")
 
     # dynamically creating cvs
@@ -418,7 +440,7 @@ def main():
     else:
         print("\n=== END-TO-END PATH LATENCY ===")
         print_system_throughput(rows, start_stats, end_stats)
-    print_stats(rows)
+    latency_stats = print_stats(rows)
 
     if alg:
         print("writing t_spent_switch_results to csv and metadata\n")
@@ -438,13 +460,11 @@ def main():
             alg=alg,
             start_stats=start_stats,
             end_stats=end_stats,
-            rows=rows
+            rows=rows,
+            latency_stats=latency_stats
         )
     else:
         print("no csv name input to print to csv")
-
-
-
 
 if __name__ == "__main__":
     main()

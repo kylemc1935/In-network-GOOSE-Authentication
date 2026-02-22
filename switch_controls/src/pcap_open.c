@@ -6,9 +6,11 @@ pcap_t *open_pcap_handle(const char *iface, int want_in_direction, char errbuf[P
     pcap_t *h = pcap_create(iface, errbuf);
     if (!h) return NULL;
 
-    pcap_set_buffer_size(h, 2*1024*1024);
+    pcap_set_snaplen(h, 2048);
+    pcap_set_promisc(h, 1);
     pcap_set_immediate_mode(h, 1);
     pcap_set_timeout(h, 10);
+    pcap_set_buffer_size(h, 2 * 1024 * 1024);
 
     if (pcap_activate(h) < 0) {
         fprintf(stderr, "Error activating %s: %s\n", iface, pcap_geterr(h));

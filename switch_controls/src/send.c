@@ -26,7 +26,7 @@ static const uint8_t hardcoded_dst_mac[6] = { // not even sure if necessary, wor
 
 // 0 no delay, 1,000,000 is 1ms (i think)
 // #define SEND_DELAY_NS 0ULL
-#define SEND_DELAY_NS 10ULL
+#define SEND_DELAY_NS 100000000ULL
 
 #define MAX_PKTS 200000
 #define MAX_FRAME 2048  // safety cap for in memory frames and out buffer
@@ -183,6 +183,8 @@ int main(void)
         }
 
         sent++;
+
+        printf("Sent packet: %lu \n", sent);
 
         nsleep(SEND_DELAY_NS);
     }

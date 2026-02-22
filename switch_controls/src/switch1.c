@@ -238,20 +238,20 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char
     int forwarded = ctx->action ? ctx->action(ctx, header, packet) : 0;
     uint64_t t_total1 = now_ns();
     ctx->total_last_ns = dt_ns(t_total0, t_total1);
-    ctx->timing_sum_ns += ctx->total_last_ns;
+//    ctx->timing_sum_ns += ctx->total_last_ns;
     printf("Packet: %lu switch processing time: %.3f us\n", packet_count, (double)ctx->total_last_ns / 1e3);
 
-    if (forwarded) {
-        fprintf(ctx->csv, "%s, %s, %s, %lu, %lu\n", sw_to_str(ctx->sw_id), alg_to_str(ctx->profile->alg), mode_to_str(ctx->profile->mode),
-            ctx->crypto_last_ns, ctx->total_last_ns);
-        ctx->timing_count++;
-        if (ctx->timing_count == 50) {
-            double avg_us = (double)ctx->timing_sum_ns / 50.0 / 1e3;
-            printf("Avg switch processing time (last 50):%.3f us\n", avg_us);
-            ctx->timing_sum_ns = 0;
-            ctx->timing_count = 0;
-        }
-    }
+//    if (forwarded) {
+//        fprintf(ctx->csv, "%s, %s, %s, %lu, %lu\n", sw_to_str(ctx->sw_id), alg_to_str(ctx->profile->alg), mode_to_str(ctx->profile->mode),
+//            ctx->crypto_last_ns, ctx->total_last_ns);
+//        ctx->timing_count++;
+//        if (ctx->timing_count == 50) {
+//            double avg_us = (double)ctx->timing_sum_ns / 50.0 / 1e3;
+//            printf("Avg switch processing time (last 50):%.3f us\n", avg_us);
+//            ctx->timing_sum_ns = 0;
+//            ctx->timing_count = 0;
+//        }
+//    }
 }
 
 static int choose_action(ctx_t *ctx) {
