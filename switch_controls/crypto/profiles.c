@@ -1,3 +1,5 @@
+#include <string.h>
+#include <stdio.h>
 #include "crypto/profiles.h"
 
 /* One master key (make it at least 32 bytes to satisfy ChaCha20-Poly1305) */
@@ -32,6 +34,7 @@ static const profile_t PROFILES[] = {
     // ChaCha20-Poly1305 (AEAD)
     { .profile_id=6, .mode=PROFILE_MODE_AEAD, .alg=ALG_CHACHA20_POLY1305,
       .tag_len=16, .nonce_len=12, .key=KEY, .key_len=32 },
+
 };
 
 static const size_t PROFILE_COUNT = sizeof(PROFILES)/sizeof(PROFILES[0]);
@@ -53,4 +56,80 @@ const char *alg_to_str(crypto_alg_t alg) {
         default:                      return "ALG?";
     }
 }
+
+// functions to organise the crypto struct, maybe put in a new file? but fine for now
+static const EVP_CIPHER* pick_gcm_cipher(size_t key_len) {
+    return (key_len == 16) ? EVP_aes_128_gcm() : EVP_aes_256_gcm();
+}
+
+// intalize crypto struct and all variables
+int profile_crypto_init(profile_crypto_t *crypto, const profile_t *p)
+{
+    if (!crypto || !p) return 0;
+    memset(crypto, 0, sizeof(*crypto));
+
+    // pick algorithm primitives
+    switch (p->alg) {
+        case ALG_HMAC_SHA256:
+            crypto->mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+            if (!crypto->mac) return 0;
+
+            crypto->hmac_params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, (char*)"SHA256", 0);
+            crypto->hmac_params[1] = OSSL_PARAM_construct_end();
+            break;
+        case ALG_BLAKE2S:
+            crypto->mac = EVP_MAC_fetch(NULL, "BLAKE2SMAC", NULL);
+            if (!crypto->mac) return 0;
+            break;
+        case ALG_AES_GCM:
+            crypto->cipher = pick_gcm_cipher(p->key_len);
+            if (!crypto->cipher) return 0;
+            break;
+        case ALG_CHACHA20_POLY1305:
+            crypto->cipher = EVP_chacha20_poly1305();
+            if (!crypto->cipher) return 0;
+            break;
+        default:
+            return 0;
+    }
+
+    // allocate reusable cipher ctx’s if possible - not possible for MACs currentry
+    if (p->alg == ALG_AES_GCM || p->alg == ALG_CHACHA20_POLY1305) {
+        if (p->mode == PROFILE_MODE_MAC) {
+            // MAC only uses the aead_ctx
+            crypto->aead_ctx = EVP_CIPHER_CTX_new();
+            if (!crypto->aead_ctx) goto fail;
+        } else if (p->mode == PROFILE_MODE_AEAD) {
+            // full AEAD needs enc and dec
+            crypto->aead_enc = EVP_CIPHER_CTX_new();
+            crypto->aead_dec = EVP_CIPHER_CTX_new();
+            if (!crypto->aead_enc || !crypto->aead_dec) goto fail;
+        } else {
+            goto fail;
+        }
+    }
+
+    crypto->inited = 1;
+    return 1;
+
+fail:
+    profile_crypto_cleanup(crypto);
+    return 0;
+}
+
+void profile_crypto_cleanup(profile_crypto_t *crypto)
+{
+    if (!crypto) return;
+
+    if (crypto->aead_ctx) { EVP_CIPHER_CTX_free(crypto->aead_ctx); crypto->aead_ctx = NULL; }
+    if (crypto->aead_enc) { EVP_CIPHER_CTX_free(crypto->aead_enc); crypto->aead_enc = NULL; }
+    if (crypto->aead_dec) { EVP_CIPHER_CTX_free(crypto->aead_dec); crypto->aead_dec = NULL; }
+
+    if (crypto->mac) { EVP_MAC_free(crypto->mac); crypto->mac = NULL; }
+
+    crypto->cipher = NULL;
+    crypto->inited = 0;
+}
+
+
 

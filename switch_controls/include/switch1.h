@@ -30,7 +30,15 @@ typedef struct ctx {
     uint64_t timing_sum_ns;
 
     uint64_t crypto_last_ns;   // per packet crypto time
-    uint64_t total_last_ns;
+    uint64_t total_last_ns;    // time of total processing
+
+    // nonce state
+    uint64_t nonce_counter;
+    uint8_t  nonce_prefix[32];
+    uint8_t  nonce_prefix_len;
+
+    // crypto context struct
+    profile_crypto_t crypto;
 } ctx_t;
 
 // want to look at moving these but works for now

@@ -33,39 +33,46 @@ static inline uint64_t now_ns(void) {
 
 static inline uint64_t dt_ns(uint64_t t0, uint64_t t1) { return t1 - t0; }
 
+static inline void nonce_from_counter(uint8_t *nonce, uint8_t nonce_len, uint64_t counter)
+{
+    // zero everything
+    memset(nonce, 0, nonce_len);
+
+    // write counter into the nonce len bytes
+    uint8_t n = nonce_len;
+    uint8_t bytes = (n >= 8) ? 8 : n;
+
+    for (uint8_t i = 0; i < bytes; i++) {
+        nonce[n - 1 - i] = (uint8_t)(counter & 0xFF);
+        counter >>= 8;
+    }
+}
+
 int handle_authenticate(ctx_t *ctx, const struct pcap_pkthdr *header, const u_char *packet)
 {
     const profile_t *p = ctx->profile;
     if (!p) return 0;
 
-    // nonce creating - define nonce only if necessary to algorithm
+    uint64_t t_crypto0 = now_ns();
     uint8_t nonce[32];
     const uint8_t *nonce_ptr = NULL;
     uint8_t nonce_len = p->nonce_len;
-
-    uint64_t t_crypto0 = now_ns();
     if (nonce_len > 0) {
         if (nonce_len > sizeof(nonce)) return 0;
-        if (RAND_bytes(nonce, nonce_len) != 1) return 0;
+        nonce_from_counter(nonce, nonce_len, ctx->nonce_counter++);
         nonce_ptr = nonce;
     } else {
-        nonce_ptr = NULL; // no nonce for HMAC/BLAKE2s
+        nonce_ptr = NULL;
     }
 
     uint8_t tag[64];
     size_t tag_len = 0;
     // compute the tag and store in tag
 
-    if (!auth_compute_tag(p, packet, header->len, nonce_ptr, nonce_len, tag, sizeof(tag), &tag_len)) return 0;
+    if (!auth_compute_tag(p, &ctx->crypto, ctx->crypto.aead_ctx, packet, header->len, nonce_ptr, nonce_len, tag, sizeof(tag), &tag_len)) return 0;
+
     uint64_t t_crypto1 = now_ns();
     ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
-
-//    // evry 20 packets insert fake tag to ensure the handle verify works correctly
-//    if (packet_count % 20 == 0) {
-//        memset(tag, 0, tag_len); // fake tag
-//        //printf("Injected fake tag on packet %lu\n", packet_count);
-//    }
-
     // add extension to packet with new tag
     size_t new_len = header->len + ext_len(nonce_len, (uint8_t)tag_len);
     uint8_t *out = malloc(new_len);
@@ -98,14 +105,14 @@ int handle_verify(ctx_t *ctx, const struct pcap_pkthdr *header, const u_char *pa
         return 0;
 
     uint64_t t_crypto0 = now_ns();
-    if (!auth_verify_tag(p, packet, original_len, nonce, p->nonce_len, tag, p->tag_len)){
+    if (!auth_verify_tag(p, &ctx->crypto, ctx->crypto.aead_ctx, packet, original_len, nonce, p->nonce_len, tag, p->tag_len)){
         printf("*******     unable to verify packet    *******\n");
         return 0;
     }
     uint64_t t_crypto1 = now_ns();
     ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
 
-//    printf("packet successfully verified using %s and sending onwards\n",alg_to_str(p->alg));
+    printf("packet successfully verified using %s and sending onwards\n",alg_to_str(p->alg));
     if (pcap_sendpacket(ctx->send_handle, packet, (int)original_len) != 0){
         return 0;
     }
@@ -140,25 +147,20 @@ int handle_aead_encrypt(ctx_t *ctx, const struct pcap_pkthdr *header, const u_ch
     // generate nonce
     uint64_t t_crypto0 = now_ns();
     uint8_t nonce[32];
-    if (p->nonce_len > sizeof(nonce)) return 0;
-    if (RAND_bytes(nonce, (int)p->nonce_len) != 1) return 0;
+//    const uint8_t *nonce_ptr = NULL;
+    nonce_from_counter(nonce, (uint8_t)p->nonce_len, ctx->nonce_counter++);
 
     // encrypt payload region, authenticate AAD header region
     uint8_t tag[16];
     size_t tag_len = 0;
 
-    if (!aead_encrypt_inplace(p, aad, aad_len, out_buf + pt_off, pt_len, nonce, p->nonce_len,
+    if (!aead_encrypt_inplace(p, &ctx->crypto, aad, aad_len, out_buf + pt_off, pt_len, nonce, p->nonce_len,
             tag, sizeof(tag), &tag_len)){
         return 0;
     }
+
     uint64_t t_crypto1 = now_ns();
     ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
-
-//    // corrupt occassional tag to test decrypt response
-//    if (packet_count % 20 == 0) {
-//        memset(tag, 0, tag_len); // fake tag
-//        // printf("Injected fake tag on packet %lu\n", packet_count);
-//    }
 
     // append extension field
     size_t new_len = ext_append(out_buf, sizeof(out_buf), out_buf, header->len, p->profile_id, nonce, (uint8_t)p->nonce_len, tag, (uint8_t)tag_len);
@@ -174,7 +176,7 @@ int handle_aead_encrypt(ctx_t *ctx, const struct pcap_pkthdr *header, const u_ch
         return 0;
     }
 
-    //printf("packet AEAD-encrypted using %s (sent len=%zu)\n", alg_to_str(p->alg), new_len);
+    printf("packet AEAD-encrypted using %s (sent len=%zu)\n", alg_to_str(p->alg), new_len);
     return 1;
 }
 
@@ -209,14 +211,14 @@ int handle_aead_decrypt_verify(ctx_t *ctx, const struct pcap_pkthdr *header, con
 
     uint64_t t_crypto0 = now_ns();
     // decrypt and verify tag
-    if (!aead_decrypt_verify_inplace(p, aad, aad_len, buf + ct_off, ct_len, nonce, p->nonce_len, tag, p->tag_len)){
+    if (!aead_decrypt_verify_inplace(p, &ctx->crypto, aad, aad_len, buf + ct_off, ct_len, nonce, p->nonce_len, tag, p->tag_len)){
         printf("******* AEAD verify/decrypt failed (%s) *******\n", alg_to_str(p->alg));
         return 0;
     }
     uint64_t t_crypto1 = now_ns();
     ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
 
-    //printf("packet AEAD verified+decrypted using %s and sending onwards\n", alg_to_str(p->alg));
+    printf("packet AEAD verified+decrypted using %s and sending onwards\n", alg_to_str(p->alg));
 
     // send only the original frame
     if (pcap_sendpacket(ctx->send_handle, buf, (int)original_len) != 0) {
@@ -336,6 +338,14 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // initalise crypto context and zero nonce
+    if (!profile_crypto_init(&ctx.crypto, ctx.profile)) {
+        fprintf(stderr, "profile_crypto_init failed\n");
+        return 1;
+    }
+    ctx.nonce_counter = 0;
+
+
     // open CSV, write header only if file is empty
     ctx.csv = fopen(csv_path, "a+");
     if (!ctx.csv) {
@@ -390,6 +400,7 @@ int main(int argc, char *argv[])
     pcap_close(ctx.send_handle);
     fflush(ctx.csv);
     fclose(ctx.csv);
+    profile_crypto_cleanup(&ctx.crypto);
 
     return EXIT_SUCCESS;
 }
