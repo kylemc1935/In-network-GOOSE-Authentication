@@ -17,6 +17,7 @@ switch1
 *.pcapng
 *.csv
 *.json
+*.pcap
 
 # ---- temporary files ----
 *~

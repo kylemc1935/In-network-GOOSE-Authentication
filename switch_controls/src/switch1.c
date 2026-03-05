@@ -67,9 +67,11 @@ int handle_authenticate(ctx_t *ctx, const struct pcap_pkthdr *header, const u_ch
 
     uint8_t tag[64];
     size_t tag_len = 0;
+    // change to match AEAD authenticate everything except the trailer
+    size_t protected_len = header->len - ID_TRAILER_LEN;
     // compute the tag and store in tag
 
-    if (!auth_compute_tag(p, &ctx->crypto, ctx->crypto.aead_ctx, packet, header->len, nonce_ptr, nonce_len, tag, sizeof(tag), &tag_len)) return 0;
+    if (!auth_compute_tag(p, &ctx->crypto, ctx->crypto.aead_ctx, packet, protected_len, nonce_ptr, nonce_len, tag, sizeof(tag), &tag_len)) return 0;
 
     uint64_t t_crypto1 = now_ns();
     ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
@@ -104,15 +106,18 @@ int handle_verify(ctx_t *ctx, const struct pcap_pkthdr *header, const u_char *pa
     &nonce, &tag, &original_len))
         return 0;
 
+    // similarly copy the aead to not authenticate the trailer (only so they match)
+    size_t protected_len = original_len - ID_TRAILER_LEN;
+
     uint64_t t_crypto0 = now_ns();
-    if (!auth_verify_tag(p, &ctx->crypto, ctx->crypto.aead_ctx, packet, original_len, nonce, p->nonce_len, tag, p->tag_len)){
+    if (!auth_verify_tag(p, &ctx->crypto, ctx->crypto.aead_ctx, packet, protected_len, nonce, p->nonce_len, tag, p->tag_len)){
         printf("*******     unable to verify packet    *******\n");
         return 0;
     }
     uint64_t t_crypto1 = now_ns();
     ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
 
-    printf("packet successfully verified using %s and sending onwards\n",alg_to_str(p->alg));
+//    printf("packet successfully verified using %s and sending onwards\n",alg_to_str(p->alg));
     if (pcap_sendpacket(ctx->send_handle, packet, (int)original_len) != 0){
         return 0;
     }
@@ -176,7 +181,7 @@ int handle_aead_encrypt(ctx_t *ctx, const struct pcap_pkthdr *header, const u_ch
         return 0;
     }
 
-    printf("packet AEAD-encrypted using %s (sent len=%zu)\n", alg_to_str(p->alg), new_len);
+//    printf("packet AEAD-encrypted using %s (sent len=%zu)\n", alg_to_str(p->alg), new_len);
     return 1;
 }
 
@@ -218,7 +223,7 @@ int handle_aead_decrypt_verify(ctx_t *ctx, const struct pcap_pkthdr *header, con
     uint64_t t_crypto1 = now_ns();
     ctx->crypto_last_ns = dt_ns(t_crypto0, t_crypto1);
 
-    printf("packet AEAD verified+decrypted using %s and sending onwards\n", alg_to_str(p->alg));
+//    printf("packet AEAD verified+decrypted using %s and sending onwards\n", alg_to_str(p->alg));
 
     // send only the original frame
     if (pcap_sendpacket(ctx->send_handle, buf, (int)original_len) != 0) {
@@ -241,7 +246,7 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char
     uint64_t t_total1 = now_ns();
     ctx->total_last_ns = dt_ns(t_total0, t_total1);
 //    ctx->timing_sum_ns += ctx->total_last_ns;
-    printf("Packet: %lu switch processing time: %.3f us\n", packet_count, (double)ctx->total_last_ns / 1e3);
+//    printf("Packet: %lu switch processing time: %.3f us\n", packet_count, (double)ctx->total_last_ns / 1e3);
 
 //    if (forwarded) {
 //        fprintf(ctx->csv, "%s, %s, %s, %lu, %lu\n", sw_to_str(ctx->sw_id), alg_to_str(ctx->profile->alg), mode_to_str(ctx->profile->mode),

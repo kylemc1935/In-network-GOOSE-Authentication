@@ -38,8 +38,9 @@ done:
 
 
 // funct for both chacha and gcm in auth mody
+// adjusted to use the same path as aead does in attempt to reduce latency
 static int aead_auth_only(const profile_t *p, const profile_crypto_t *crypto, EVP_CIPHER_CTX *ctx, int is_gcm,
-                                 const uint8_t *aad, size_t aad_len, const uint8_t *nonce, size_t nonce_len,
+                                 const uint8_t *msg, size_t msg_len, const uint8_t *nonce, size_t nonce_len,
                                  uint8_t *out, size_t out_cap, size_t *out_len)
 {
     if (!p || !crypto || !crypto->cipher || !ctx) return 0;
@@ -49,8 +50,8 @@ static int aead_auth_only(const profile_t *p, const profile_crypto_t *crypto, EV
     int ok = 0; // temporary and success flag
     int tmp = 0;
 
-    // reuse ctx instead of new/free per packet
-    EVP_CIPHER_CTX_reset(ctx);
+    uint8_t discard[2048]; // this is for the ciphertext produced
+    EVP_CIPHER_CTX_reset(ctx); // reuse ctx instead of new/free per packet
 
     // initalie the context, set the nonce length and then feed the mesage into GCM
     if (EVP_EncryptInit_ex(ctx, crypto->cipher, NULL, NULL, NULL) != 1) goto done;
@@ -61,10 +62,10 @@ static int aead_auth_only(const profile_t *p, const profile_crypto_t *crypto, EV
         if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, (int)nonce_len, NULL) != 1) goto done;
     }
     if (EVP_EncryptInit_ex(ctx, NULL, NULL, p->key, nonce) != 1) goto done;
-    if (aad && aad_len) {
-        if (EVP_EncryptUpdate(ctx, NULL, &tmp, aad, (int)aad_len) != 1) goto done;
+    if (msg && msg_len) {
+        if (EVP_EncryptUpdate(ctx, NULL, &tmp, msg, (int)msg_len) != 1) goto done;
     }
-    if (EVP_EncryptFinal_ex(ctx, NULL, &tmp) != 1) goto done;
+    if (EVP_EncryptFinal_ex(ctx, discard + tmp, &tmp) != 1) goto done;
 
     // extract the tag
     if (is_gcm) {
