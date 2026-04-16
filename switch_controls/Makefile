@@ -13,7 +13,7 @@ COMMON_SRC := \
 
 COMMON_OBJ := $(COMMON_SRC:.c=.o)
 
-BINS := switch1 send receive ack_receive
+BINS := switch1 send receive
 TARGETS := $(addprefix build/,$(BINS))
 
 all: $(TARGETS)

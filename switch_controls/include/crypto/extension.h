@@ -19,12 +19,8 @@ size_t ext_append(uint8_t *out, size_t out_cap,
 
 // parse footer assuming predefined expected lengths
 // returns 1 on success and sets pointers into pkt
-int ext_parse_footer_fixed(const uint8_t *pkt, size_t pkt_len,
-                           uint8_t expected_profile_id,
-                           uint8_t expected_nonce_len,
-                           uint8_t expected_tag_len,
-                           const uint8_t **nonce_out,
-                           const uint8_t **tag_out,
-                           size_t *original_len_out);
+int ext_parse_footer_fixed(const uint8_t *pkt, size_t pkt_len, uint8_t expected_profile_id,
+                           uint8_t expected_nonce_len, uint8_t expected_tag_len, const uint8_t **nonce_out,
+                           const uint8_t **tag_out, size_t *original_len_out);
 
 #endif

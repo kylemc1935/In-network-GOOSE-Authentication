@@ -4,6 +4,12 @@
 
     And is also capable of calculating the througput of a system, ie from one port  to the other
 
+    It opens a tcpdump on each of the provided ports (defined in the profile)
+
+     - auth and verify profiles are for per switch processing, mininiet and experiment are for the traversal of the network paths
+     - ports can be changed in the profiles
+
+    The tcpdump output is written to a file, once the tcpdump has finished, the outputs are read in and compared to calculate the time differnece
 """
 
 import argparse
@@ -36,7 +42,7 @@ output_csv = Path("latency.csv")
 DEFAULT_BUFSIZE_KB = 16384
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-pcap_dir = BASE_DIR / "data" / "pcaps"
+pcap_dir = BASE_DIR  / "data" / "pcaps"
 output_dir = BASE_DIR / "data" / "t_spent_switch_results"
 
 import re
@@ -67,6 +73,13 @@ PROFILES = {
     "end_iface":   "H1-eth1",   # receiver
     "start_rule": "tail",
     "end_rule":   "tail",
+  },
+  "experiment": { # H1->S1->S2->H1
+    "kind": "path",
+    "start_iface": "enp1s0",   # sender
+    "end_iface":   "enp2s0",   # receiver
+    "start_rule": "tail",
+    "end_rule":   "tail",
   }
 }
 
@@ -95,7 +108,7 @@ def extract_seq(raw: bytes, *, mode: str, marker: bytes) -> int:
 
 # reads pcap file and returrs a list of (seq, timestamp)
 def read_pairs(pcap_path: Path, *, mode: str, marker: bytes) -> tuple[List[Tuple[int, float]], PcapStats]:
-    out: List[Tuple[int, float]] = [] # start with an empty list and open pcap file to read in
+    out: List[Tuple[int, float]] = [] # start with an empty list and open pcap file to read in (sequence, timstamp)
 
     stats = PcapStats()
     seen = set()
@@ -103,7 +116,7 @@ def read_pairs(pcap_path: Path, *, mode: str, marker: bytes) -> tuple[List[Tuple
         for pkt in rd:
             try:
                 raw = bytes(pkt)
-                ts = float(pkt.time)
+                ts = float(pkt.time) # get tiemstamp
             except Exception:
                 continue
 
@@ -196,7 +209,7 @@ def capture_two_pcaps(in_iface: str, out_iface: str, in_pcap: Path, out_pcap: Pa
     p_in = _start_tcpdump(in_iface, in_pcap, filter)
     p_out = _start_tcpdump(out_iface, out_pcap, filter)
 
-    # give tcpdump a moment to start (and fail if it’s going to)
+    # give tcpdump a moment to start (or fail if it’s going to)
     time.sleep(0.25)
 
     # if either exited, print why
@@ -232,7 +245,7 @@ def capture_two_pcaps(in_iface: str, out_iface: str, in_pcap: Path, out_pcap: Pa
         if pcap.stat().st_size == 0:
             raise RuntimeError(f"pcap exists but is empty (no packets captured?): {pcap}")
 
-# write to csv, need to come back and sort ##################
+# write to csv
 def write_csv(csv_path: Path, rows: List[Tuple[int, float, float, float]]) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with open(csv_path, "w", newline="") as f:
@@ -281,28 +294,6 @@ def print_stats(rows: List[Tuple[int, float, float, float]]) -> dict:
     print(f"Matched {n} packets.")
     print(f"avg={avg:.3f} ms, std={std:.3f} ms, p50={p50:.3f} ms, p95={p95:.3f} ms, p99={p99:.3f} ms")
     return stats
-
-def print_system_throughput(rows, startStats : PcapStats, endStats : PcapStats) -> None:
-    if not rows:
-        print("No matched packets")
-        return
-
-    first_tin = rows[0][1]
-    last_tout = rows[-1][2]
-
-    duration = max(1e-9, last_tout - first_tin)
-    sent = startStats.unique_seqs
-    delivered = len(rows)
-    lost = max(0, sent - delivered)
-    delivery_ratio = (delivered / sent) if sent > 0 else 0.0
-    pps = delivered / duration
-
-    print("Throuput stats:\n")
-    print(f"duration: {duration:.6f} s")
-    print(f"delivered packets: {delivered}")
-    print(f"lost (start - matched): {lost}")
-    print(f"delivery ratio:{delivery_ratio * 100:.2f}%")
-    print(f"throughput: {pps:.1f} pkt/s")
 
 def write_metadata(meta_path: Path, *, profile: str, kind: str, alg: str | None,
                    start_stats: PcapStats, end_stats: PcapStats,
@@ -356,6 +347,13 @@ def write_metadata(meta_path: Path, *, profile: str, kind: str, alg: str | None,
             "duration_s": duration_actual,
             "throughput_pps": pps
         },
+
+        "delivery": {
+            "delivered_packets": delivered,
+            "sent_packets": sent,
+            "lost_packets": lost,
+            "delivery_ratio": delivery_ratio,
+        },
         "latency_ms": latency_stats
 
     }
@@ -376,7 +374,7 @@ def main():
     ap = argparse.ArgumentParser(description="Capture (optional) + offline correlate by seq (sort + merge-join).")
     ap.add_argument("--profile", required=True, choices=PROFILES.keys(), help="Use a predefined profile (auth/verify).")
     ap.add_argument("--duration", default=10, type=float, help="Capture duration in seconds")
-    ap.add_argument("--max", type=int, default=1000, help="Max matched pairs to write")
+    ap.add_argument("--max", type=int, default=100000000, help="Max matched pairs to write")
 
     # dynamically creating cvs
     ap.add_argument("--named", action="store_true",
@@ -439,7 +437,6 @@ def main():
         print("\n=== SWITCH PROCESSING LATENCY ===")
     else:
         print("\n=== END-TO-END PATH LATENCY ===")
-        print_system_throughput(rows, start_stats, end_stats)
     latency_stats = print_stats(rows)
 
     if alg:

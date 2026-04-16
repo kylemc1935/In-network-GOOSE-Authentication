@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include "crypto/profiles.h"
 
-/* One master key (make it at least 32 bytes to satisfy ChaCha20-Poly1305) */
+/* One master key - random and long enough to suuport all algorithms */
 static const uint8_t KEY[32] = {
     0x74,0x65,0x73,0x74,0x69,0x6e,0x67,0x6b,
     0x65,0x79,0x2d,0x6d,0x61,0x73,0x74,0x65,
@@ -39,6 +39,7 @@ static const profile_t PROFILES[] = {
 
 static const size_t PROFILE_COUNT = sizeof(PROFILES)/sizeof(PROFILES[0]);
 
+// returns profile matching profile_id
 const profile_t* profile_lookup(uint8_t profile_id)
 {
     for (size_t i = 0; i < PROFILE_COUNT; i++) {
@@ -57,12 +58,12 @@ const char *alg_to_str(crypto_alg_t alg) {
     }
 }
 
-// functions to organise the crypto struct, maybe put in a new file? but fine for now
+// selcects the correct gcm function based on key length
 static const EVP_CIPHER* pick_gcm_cipher(size_t key_len) {
     return (key_len == 16) ? EVP_aes_128_gcm() : EVP_aes_256_gcm();
 }
 
-// intalize crypto struct and all variables
+// creates cryptographic profile, initalising the openssl contexts and data
 int profile_crypto_init(profile_crypto_t *crypto, const profile_t *p)
 {
     if (!crypto || !p) return 0;
@@ -93,14 +94,14 @@ int profile_crypto_init(profile_crypto_t *crypto, const profile_t *p)
             return 0;
     }
 
-    // allocate reusable cipher ctx’s if possible - not possible for MACs currentry
+    // allocate reusable cipher ctx’s if possible - not possible for MACs currentky
     if (p->alg == ALG_AES_GCM || p->alg == ALG_CHACHA20_POLY1305) {
         if (p->mode == PROFILE_MODE_MAC) {
-            // MAC only uses the aead_ctx
+            // MAC only uses the aead-auth only contexts also
             crypto->aead_ctx = EVP_CIPHER_CTX_new();
             if (!crypto->aead_ctx) goto fail;
         } else if (p->mode == PROFILE_MODE_AEAD) {
-            // full AEAD needs enc and dec
+            // full AEAD requires seperate enc and dec and contexts
             crypto->aead_enc = EVP_CIPHER_CTX_new();
             crypto->aead_dec = EVP_CIPHER_CTX_new();
             if (!crypto->aead_enc || !crypto->aead_dec) goto fail;
@@ -117,6 +118,7 @@ fail:
     return 0;
 }
 
+//frees any openssl data
 void profile_crypto_cleanup(profile_crypto_t *crypto)
 {
     if (!crypto) return;

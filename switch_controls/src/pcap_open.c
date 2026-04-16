@@ -18,11 +18,13 @@ pcap_t *open_pcap_handle(const char *iface, int want_in_direction, char errbuf[P
         return NULL;
     }
 
-    if (want_in_direction && pcap_setdirection(h, PCAP_D_IN) != 0) {
-        fprintf(stderr, "Error setting direction on %s: %s\n", iface, pcap_geterr(h));
-        pcap_close(h);
-        return NULL;
-    }
+    // ----------------------------------------------
+    // this is required for TAP based interface
+//    if (want_in_direction && pcap_setdirection(h, PCAP_D_IN) != 0) {
+//        fprintf(stderr, "Error setting direction on %s: %s\n", iface, pcap_geterr(h));
+//        pcap_close(h);
+//        return NULL;
+//    }
 
     return h;
 }

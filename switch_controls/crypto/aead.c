@@ -1,11 +1,12 @@
 #include "crypto/aead.h"
-
 #include <openssl/evp.h>
 #include <string.h>
 
+// AEAD functions for the GOOSE encryption and authentication, and decryption
 
-// not adjusted to take the crytpo struct for the initalized ciphers and contexts to save per packet computations
+// now adjusted to take the crytpo struct for the initalized ciphers and contexts to save per packet computations
 // aed-gcm aead
+// buf (packet) is encrypted in place and writes authentication tag into out_tag, AAD is provided by the caller (ethernet frame in this case)
 static int aes_gcm_encrypt_inplace(const profile_t *p, profile_crypto_t *crypto, const uint8_t *aad, size_t aad_len,
                                    uint8_t *buf, size_t buf_len, const uint8_t *nonce, size_t nonce_len,
                                    uint8_t *out_tag, size_t out_tag_cap, size_t *out_tag_len)
@@ -18,7 +19,7 @@ static int aes_gcm_encrypt_inplace(const profile_t *p, profile_crypto_t *crypto,
 
     int ok = 0, outl = 0;
 
-    //  clear any previous state
+    //  clear any previous state before reinitalising for new packet
     EVP_CIPHER_CTX_reset(ctx);
 
     // setup context with cipher and set the nonce and key
@@ -26,7 +27,7 @@ static int aes_gcm_encrypt_inplace(const profile_t *p, profile_crypto_t *crypto,
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)nonce_len, NULL) != 1) goto done;
     if (EVP_EncryptInit_ex(ctx, NULL, NULL, p->key, nonce) != 1) goto done;
 
-    if (aad && aad_len) { // add aad if required
+    if (aad && aad_len) { // add aad to computation if defined
         if (EVP_EncryptUpdate(ctx, NULL, &outl, aad, (int)aad_len) != 1) goto done;
     }
 
@@ -45,6 +46,7 @@ done:
     return ok;
 }
 
+// similarly decrypts buf in place and verifies the transmitted authentication tag
 static int aes_gcm_decrypt_verify_inplace(const profile_t *p, profile_crypto_t *crypto, const uint8_t *aad, size_t aad_len,
                                           uint8_t *buf, size_t buf_len, const uint8_t *nonce, size_t nonce_len,
                                           const uint8_t *recv_tag, size_t recv_tag_len)
@@ -74,13 +76,14 @@ static int aes_gcm_decrypt_verify_inplace(const profile_t *p, profile_crypto_t *
 
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, (void*)recv_tag) != 1) goto done;
 
-    ok = (EVP_DecryptFinal_ex(ctx, buf + outl, &outl) == 1); // result of if tag passes of not
+    // verify tag, and return the output
+    ok = (EVP_DecryptFinal_ex(ctx, buf + outl, &outl) == 1);
 
 done:
     return ok;
 }
 
-// chacha20-poly1306 aead
+// chacha20-poly1306 aead, same as the aes-gmac functions
 static int chacha_poly_encrypt_inplace(const profile_t *p, profile_crypto_t *crypto, const uint8_t *aad, size_t aad_len,
                                        uint8_t *buf, size_t buf_len, const uint8_t *nonce, size_t nonce_len,
                                        uint8_t *out_tag, size_t out_tag_cap, size_t *out_tag_len)
@@ -117,7 +120,7 @@ static int chacha_poly_encrypt_inplace(const profile_t *p, profile_crypto_t *cry
 done:
     return ok;
 }
-
+// chacha20-poly1305 decrypt, same as the aes-gmac functions
 static int chacha_poly_decrypt_verify_inplace(const profile_t *p, profile_crypto_t *crypto, const uint8_t *aad, size_t aad_len,
                                               uint8_t *buf, size_t buf_len, const uint8_t *nonce, size_t nonce_len,
                                               const uint8_t *recv_tag, size_t recv_tag_len){
@@ -126,7 +129,7 @@ static int chacha_poly_decrypt_verify_inplace(const profile_t *p, profile_crypto
     if (!crypto || !crypto->aead_dec || !crypto->cipher) return 0;
 
     // similar to encrypt version but for decrypting and verifying
-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    EVP_CIPHER_CTX *ctx = crypto->aead_dec;
     if (!ctx) return 0;
 
     int ok = 0, outl = 0;
@@ -153,7 +156,7 @@ done:
     return ok;
 }
 
-// public api wrappers
+// public api wrappers for aead encryption
 int aead_encrypt_inplace(const profile_t *p, profile_crypto_t *crypto, const uint8_t *aad, size_t aad_len, uint8_t *buf,
                          size_t buf_len, const uint8_t *nonce, size_t nonce_len,
                          uint8_t *out_tag, size_t out_tag_cap, size_t *out_tag_len){
@@ -173,6 +176,7 @@ int aead_encrypt_inplace(const profile_t *p, profile_crypto_t *crypto, const uin
     }
 }
 
+// similar for the aead decrypt
 int aead_decrypt_verify_inplace(const profile_t *p, profile_crypto_t *crypto, const uint8_t *aad, size_t aad_len, uint8_t *buf,
                                 size_t buf_len, const uint8_t *nonce, size_t nonce_len,
                                 const uint8_t *recv_tag, size_t recv_tag_len){

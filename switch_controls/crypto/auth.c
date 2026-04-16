@@ -1,11 +1,11 @@
 #include "crypto/auth.h"
-
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/crypto.h>
 #include <openssl/core_names.h>
 
-// wrapper for both hmac and blake
+// function for MAC algorithms, computes MAC tag over the input for the given alg
+// wrapper for both hmac-sha and blake authentication
 static int mac_authenticate(const profile_t *p, const profile_crypto_t *crypto,
                               const uint8_t *msg, size_t msg_len,
                               const uint8_t *nonce, size_t nonce_len,
@@ -13,18 +13,18 @@ static int mac_authenticate(const profile_t *p, const profile_crypto_t *crypto,
                               {
     if (!p || !crypto || !crypto->mac || !out || !out_len) return 0;
 
-    EVP_MAC_CTX *ctx = EVP_MAC_CTX_new(crypto->mac); // create mac context
+    EVP_MAC_CTX *ctx = EVP_MAC_CTX_new(crypto->mac);
     if (!ctx) return 0;
 
-    size_t len = 0; // len receives the output length and ok is succes flag
-    int ok = 0;
+    size_t len = 0; // len receives the output length
+    int ok = 0; // success flag
 
     const OSSL_PARAM *params = NULL;
     if (p->alg == ALG_HMAC_SHA256) params = crypto->hmac_params;
 
-    // initalise and use nonce to form message bytes and write the MAC
+    // initalise the mac context and use nonce (if provided), then authenticate the message bytes, to produce the tag
     if (EVP_MAC_init(ctx, p->key, p->key_len, params) != 1) goto done;
-    if (nonce && nonce_len) if (EVP_MAC_update(ctx, nonce, nonce_len) != 1) goto done; // nonce not used here but kept in if needed
+    if (nonce && nonce_len) if (EVP_MAC_update(ctx, nonce, nonce_len) != 1) goto done;
     if (EVP_MAC_update(ctx, msg, msg_len) != 1) goto done;
     if (EVP_MAC_final(ctx, out, &len, out_cap) != 1) goto done;
 
@@ -36,9 +36,9 @@ done:
     return ok;
 }
 
-
-// funct for both chacha and gcm in auth mody
-// adjusted to use the same path as aead does in attempt to reduce latency
+// computes an authentication tag using the aead cipher in auth-only mode
+// message is simply passed through the same encryption path but the ciphertext is discarded (openssl optimises this path heavily, so makes sense)
+// both chacha-poly and aes-gcm
 static int aead_auth_only(const profile_t *p, const profile_crypto_t *crypto, EVP_CIPHER_CTX *ctx, int is_gcm,
                                  const uint8_t *msg, size_t msg_len, const uint8_t *nonce, size_t nonce_len,
                                  uint8_t *out, size_t out_cap, size_t *out_len)
@@ -50,24 +50,26 @@ static int aead_auth_only(const profile_t *p, const profile_crypto_t *crypto, EV
     int ok = 0; // temporary and success flag
     int tmp = 0;
 
-    uint8_t discard[2048]; // this is for the ciphertext produced
-    EVP_CIPHER_CTX_reset(ctx); // reuse ctx instead of new/free per packet
+    uint8_t discard[2048]; // temp bufer for the ciphertext produced
+    EVP_CIPHER_CTX_reset(ctx); // reuse ctx instead of per packet allocation
 
-    // initalie the context, set the nonce length and then feed the mesage into GCM
+    // initalie the cipher context, configure the nonce length and then process the message to gen authenitcation tag
     if (EVP_EncryptInit_ex(ctx, crypto->cipher, NULL, NULL, NULL) != 1) goto done;
-    // set nonce len depending on the alg
+
+    // select the openssl control operation based on the given aead mode
     if (is_gcm) {
         if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)nonce_len, NULL) != 1) goto done;
     } else {
         if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, (int)nonce_len, NULL) != 1) goto done;
     }
+
     if (EVP_EncryptInit_ex(ctx, NULL, NULL, p->key, nonce) != 1) goto done;
     if (msg && msg_len) {
-        if (EVP_EncryptUpdate(ctx, NULL, &tmp, msg, (int)msg_len) != 1) goto done;
+        if (EVP_EncryptUpdate(ctx, discard, &tmp, msg, (int)msg_len) != 1) goto done;
     }
     if (EVP_EncryptFinal_ex(ctx, discard + tmp, &tmp) != 1) goto done;
 
-    // extract the tag
+    // extract the generated tag from the cipher
     if (is_gcm) {
         if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, out) != 1) goto done;
     } else {
@@ -81,15 +83,16 @@ done:
     return ok;
 }
 
+// api for the authentiation computation, simily takes the cryptography context and profile and uses the correct alg
 int auth_compute_tag(const profile_t *profile, const profile_crypto_t *crypto, EVP_CIPHER_CTX *aead_ctx,
     const uint8_t *msg, size_t msg_len, const uint8_t *nonce, size_t nonce_len, uint8_t *out_tag, size_t out_tag_cap, size_t *out_tag_len){
     if (!profile || !msg || !out_tag || !out_tag_len) return 0;
-    if (out_tag_cap < profile->tag_len) return 0; // biffer must be big enough
+    if (out_tag_cap < profile->tag_len) return 0;
 
-    size_t produced = 0; // how many bytes the chosen alg produces
-    int ok = 0; // success flag
+    size_t produced = 0; // bytes the chosen alg produces
+    int ok = 0;
 
-    // switch based on chosen alg and perform authentication
+    // switch based on chosen alg and performs authentication
     switch (profile->alg) {
         case ALG_HMAC_SHA256:
         case ALG_BLAKE2S:
@@ -109,12 +112,15 @@ int auth_compute_tag(const profile_t *profile, const profile_crypto_t *crypto, E
     }
 
     if (!ok) return 0;
-    if (produced != profile->tag_len) return 0; // alg must produce exactly what the profile expects else an error
+    // rejject the tags with lengths not matching expected lengths
+    if (produced != profile->tag_len) return 0;
 
     *out_tag_len = produced;
     return 1; // return produces tag length and signal success
 }
 
+// just a api essentially for the verify function, as its verification only (no encryption), this uses the authentication functions to
+// calculate the tag, and compares it
 int auth_verify_tag(const profile_t *p, const profile_crypto_t *crypto, EVP_CIPHER_CTX *aead_ctx,
     const uint8_t *msg, size_t msg_len, const uint8_t *nonce, size_t nonce_len, const uint8_t *recv_tag, size_t recv_tag_len){
     if (!p || !msg || !recv_tag) return 0;

@@ -9,8 +9,13 @@
 #include <signal.h>
 #include "pcap_open.h"
 
-//#define LISTEN_IFACE "H2-eth0"
+// simple receive script, that handles incoming GOOSE packets
+// it extracts the experimental sequence number for debugging to ensure traversal works
+
+// change based on the device and port listening on----
 #define LISTEN_IFACE "H1-eth1"
+// -----------------------
+
 #define ETH_HDR_LEN 14
 #define MARKER0 0xAA
 #define MARKER1 0xFF
@@ -23,9 +28,6 @@ struct recv_rec {
     uint32_t seq;
     uint64_t ts_ns;
 };
-
-static struct recv_rec recv_log[MAX_RECV];
-static size_t recv_count = 0;
 
 static inline uint64_t now_ns(void)
 {
@@ -48,17 +50,10 @@ static void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_ch
         printf("no marker\n");
         return;
     }
-//    printf("marker present\n");
 
     uint32_t seq; // extract seq no
     memcpy(&seq, t + 2, sizeof(seq));
     seq = ntohl(seq);
-
-    if (recv_count < MAX_RECV) {
-        recv_log[recv_count].seq = seq;
-        recv_log[recv_count].ts_ns = t_recv;
-        recv_count++;
-    }
 
     printf("packet seq=%u\n", seq);
 

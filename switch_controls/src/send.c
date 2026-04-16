@@ -11,22 +11,22 @@
 #include <sys/socket.h>
 #include "pcap_open.h"
 
-#define PCAP_FILE  "../sample_goose_packets.pcap"
+// send script used to inject GOOSE packets into the network, packets are read in and strored in memory to minimise
+// delay between packets
+
+// change based on device and port listneing on -------
 #define SEND_IFACE "H1-eth0"
+// --------------------------
 
-static const uint8_t hardcoded_dst_mac[6] = { // not even sure if necessary, works in mininet
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x02
-};
-
+#define PCAP_FILE  "../sample_goose_packets.pcap"
 #define ETH_HDR_LEN 14
-
 #define MARKER0 0xAA
 #define MARKER1 0xFF
 #define TRAILER_LEN 6  // 2 marker + 4 seq
 
-// 0 no delay, 1,000,000 is 1ms (i think)
+// 1,000,000 is 1ms
 // #define SEND_DELAY_NS 0ULL
-#define SEND_DELAY_NS 100000000ULL
+#define SEND_DELAY_NS 1000000ULL
 
 #define MAX_PKTS 200000
 #define MAX_FRAME 2048  // safety cap for in memory frames and out buffer
@@ -36,18 +36,25 @@ struct send_rec {  // struct to store timestamp and sequence number
     uint64_t ts_ns;
 };
 
-static struct send_rec send_log[MAX_PKTS]; // struct for all packets
-static size_t send_count = 0;
+// pcap preload for faster sending
+struct frame { // frame for the packet in memeory
+    uint16_t len;
+    uint8_t  data[MAX_FRAME];
+};
 
-static inline uint64_t now_ns(void) // time - can shift to another file as used in switch
-{
+static struct send_rec send_log[MAX_PKTS]; // struct to store all packets
+static size_t send_count = 0;
+static struct frame *frames = NULL;
+static size_t nframes = 0;
+#define MAX_CAPACITY 160 // 160 packets in this file, can adjust based on file used
+
+static inline uint64_t now_ns(void){ // time function
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-static void nsleep(uint64_t ns) // delay function
-{
+static void nsleep(uint64_t ns){ // delay function
     if (ns == 0) return;
     struct timespec req;
     req.tv_sec  = (time_t)(ns / 1000000000ULL);
@@ -55,8 +62,7 @@ static void nsleep(uint64_t ns) // delay function
     nanosleep(&req, NULL);
 }
 
-static int get_iface_mac(const char *ifname, uint8_t mac[6]) // mac address for the interface
-{
+static int get_iface_mac(const char *ifname, uint8_t mac[6]){ // mac address for the interface
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return 0;
 
@@ -74,15 +80,6 @@ static int get_iface_mac(const char *ifname, uint8_t mac[6]) // mac address for 
     return 1;
 }
 
-// pcap preload for faster sending
-struct frame { // frame for the packet in memeory
-    uint16_t len;
-    uint8_t  data[MAX_FRAME];
-};
-
-static struct frame *frames = NULL;
-static size_t nframes = 0;
-#define MAX_CAPACITY 160 // 160 packets in this file
 
 static void load_pcap_frames(const char *file) // open pcap file and load in frames
 {
@@ -110,11 +107,6 @@ static void load_pcap_frames(const char *file) // open pcap file and load in fra
         i++;
     }
 
-    if (next == -1) {
-        fprintf(stderr, "pcap read error: %s\n", pcap_geterr(pc));
-        exit(1);
-    }
-
     pcap_close(pc);
     nframes = i;
 
@@ -130,7 +122,7 @@ int main(void)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
 
-    // preload the PCAP into mem for speed, then can loop it indefinitely
+    // preload the PCAP into mem for speed, then can loop through them indefinitely
     load_pcap_frames(PCAP_FILE);
 
     pcap_t *sendh = open_pcap_handle(SEND_IFACE, 0, errbuf);
@@ -165,10 +157,6 @@ int main(void)
         // copy base frame
         memcpy(out, f->data, base_len);
 
-        // overwrite MAC (not sure if even necssary)
-        memcpy(out + 0, hardcoded_dst_mac, 6);
-        memcpy(out + 6, src_mac, 6);
-
         // append trailer marker + seq
         out[base_len + 0] = MARKER0;
         out[base_len + 1] = MARKER1;
@@ -184,7 +172,7 @@ int main(void)
 
         sent++;
 
-        printf("Sent packet: %lu \n", sent);
+//        printf("Sent packet: %lu \n", sent);
 
         nsleep(SEND_DELAY_NS);
     }

@@ -1,5 +1,6 @@
 #include "filter.h"
 
+// filter for checking if is GOOSE
 int is_goose(const unsigned char *pkt, unsigned int len)
 {
     if (len < 14) {
