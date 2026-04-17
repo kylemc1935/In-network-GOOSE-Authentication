@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include "crypto/profiles.h"
 
+// handles the cryptography profiles for the algorithm and associated data
+
 /* One master key - random and long enough to suuport all algorithms */
 static const uint8_t KEY[32] = {
     0x74,0x65,0x73,0x74,0x69,0x6e,0x67,0x6b,

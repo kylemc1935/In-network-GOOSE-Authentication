@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include "profiles.h"
 
+// AEAD functions for the GOOSE encryption and authentication, and decryption
+
 // encrypts buffer in place and outputs tag, aad (additional authen data) not encrypted but authenticated
 // writes the generated tag to out_tag and stores its length in out_tag_len
 // returns 1 - success, 0 - error

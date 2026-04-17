@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include "crypto/profiles.h"
 
+// main switch program, this is the main file for the GASF, this defines the packet handler and the associated handling of the authentiactaion functions
+// from auth.c/h and aead.c/h, the tags produced are then inserted to packets using extension.c/h
+
 // switch toles for each one
 typedef enum {
     SW_S1 = 1,

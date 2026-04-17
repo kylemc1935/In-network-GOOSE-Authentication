@@ -17,6 +17,12 @@
 #include <ctype.h>
 #include <errno.h>
 
+//--------------------------------------------------------
+// main switch program, this is the main file for the GASF, this defines the packet handler and the associated handling of the authentiactaion functions
+// from auth.c/h and aead.c/h, the tags produced are then inserted to packets using extension.c/h
+// can be ran from inside the switch_controls/build folder using ./switch1 {mode} {algorithm profile}
+// -----------------------------------------------------
+
 #define ETHERNET_HEADER_LEN 14
 #define ID_TRAILER_LEN 6 // len for the sequence number appended to the end stricly for the measurment framework
 

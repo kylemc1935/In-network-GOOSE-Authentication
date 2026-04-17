@@ -1,6 +1,9 @@
 #include "crypto/extension.h"
 #include <string.h>
 
+// handles the creation and the parsing of the extension field
+// switch.c/h uses this
+
 size_t ext_len(uint8_t tag_len, uint8_t nonce_len)
 {
     // extension layout: profile_id + tag  + nonce

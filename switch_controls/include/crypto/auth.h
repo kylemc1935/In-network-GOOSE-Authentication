@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include "profiles.h"
 
+// functions for the authentcation algorithms, for both the MAC and aead auth-only versions
+
 // computes tag for auth only profiles
 int auth_compute_tag(const profile_t *p, const profile_crypto_t *crypto, EVP_CIPHER_CTX *aead_ctx,
                      const uint8_t *msg, size_t msg_len,

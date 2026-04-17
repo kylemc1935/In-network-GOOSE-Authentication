@@ -4,8 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// footer format (placed at end of frame) [ profile_id ][ nonce_len ][ nonce ][ tag_len ][ tag ]
-// switch is in a predefined profile mode, so it expects exact lengths
+// handles the creation and the parsing of the extension field
+// switch.c/h uses this
+
+// footer format (placed at end of frame) [ profile_id ][ tag ][ nonce ]
 
 size_t ext_len(uint8_t nonce_len, uint8_t tag_len);
 

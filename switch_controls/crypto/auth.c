@@ -4,6 +4,8 @@
 #include <openssl/crypto.h>
 #include <openssl/core_names.h>
 
+// functions for the authentcation algorithms, for both the MAC and aead auth-only versions
+
 // function for MAC algorithms, computes MAC tag over the input for the given alg
 // wrapper for both hmac-sha and blake authentication
 static int mac_authenticate(const profile_t *p, const profile_crypto_t *crypto,

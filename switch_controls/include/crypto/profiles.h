@@ -6,6 +6,8 @@
 #include <openssl/evp.h>
 #include <openssl/core_names.h>
 
+// handles the cryptography profiles for the algorithm and associated data
+
 // profile mode defines the profile used
 typedef enum {
     PROFILE_MODE_MAC  = 1,   // authen only (no payload encryption)
